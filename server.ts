@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 
@@ -26,18 +27,24 @@ async function startServer() {
   const app = express();
   const port = parseInt(process.env.PORT || '3000', 10);
 
+  app.use(cors());
   app.use(express.json());
 
   // API Route Helper to adapt Vercel handlers to Express
-  const vercelToExpress = (handler: any) => async (req: any, res: any) => {
+  const vercelToExpress = (handler: any, name: string) => async (req: any, res: any) => {
+    console.log(`[Server] Routing request to API: ${name} (${req.method})`);
     try {
       // Vercel handlers expect req and res objects
       // Express objects are mostly compatible
       // Handle the case where the import is an ES module with a default export
       const actualHandler = handler.default || handler;
+      if (typeof actualHandler !== 'function') {
+        console.error(`[Server] Handler for ${name} is not a function!`, actualHandler);
+        return res.status(500).json({ success: false, error: `Handler ${name} is missing or invalid` });
+      }
       await actualHandler(req, res);
     } catch (err) {
-      console.error('API Error:', err);
+      console.error(`[Server] API Error in ${name}:`, err);
       if (!res.headersSent) {
         res.status(500).json({ success: false, error: 'Internal server error' });
       }
@@ -45,25 +52,32 @@ async function startServer() {
   };
 
   // API Routes
-  app.all('/api/auth/login', vercelToExpress(loginHandler));
-  app.all('/api/auth/register', vercelToExpress(registerHandler));
-  app.all('/api/auth/me', vercelToExpress(meHandler));
-  app.all('/api/auth/logout', vercelToExpress(logoutHandler));
-  app.all('/api/dashboard/stats', vercelToExpress(dashboardStatsHandler));
-  app.all('/api/profile/update', vercelToExpress(profileUpdateHandler));
-  app.all('/api/jobs/index', vercelToExpress(jobsIndexHandler));
-  app.all('/api/jobs/create', vercelToExpress(jobsCreateHandler));
-  app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler));
-  app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler));
-  app.all('/api/admin', vercelToExpress(adminHandler));
-  app.all('/api/actions', vercelToExpress(actionsHandler));
+  app.all('/api/auth/login', vercelToExpress(loginHandler, 'login'));
+  app.all('/api/auth/register', vercelToExpress(registerHandler, 'register'));
+  app.all('/api/auth/me', vercelToExpress(meHandler, 'me'));
+  app.all('/api/auth/logout', vercelToExpress(logoutHandler, 'logout'));
+  app.all('/api/dashboard/stats', vercelToExpress(dashboardStatsHandler, 'stats'));
+  app.all('/api/profile/update', vercelToExpress(profileUpdateHandler, 'update-profile'));
+  app.all('/api/jobs/index', vercelToExpress(jobsIndexHandler, 'jobs-index'));
+  app.all('/api/jobs/create', vercelToExpress(jobsCreateHandler, 'jobs-create'));
+  app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
+  app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
+  app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
+  app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
 
   // Serve static files in production, use Vite middleware in development
   if (process.env.NODE_ENV === 'production') {
-    const distPath = path.resolve(_dirname, 'dist');
+    // If running from dist/server.cjs, _dirname is already the dist folder
+    const distPath = _dirname.endsWith('dist') || _dirname.includes('/dist') 
+      ? _dirname 
+      : path.resolve(_dirname, 'dist');
+    
+    console.log(`[Server] Production mode. Serving static files from: ${distPath}`);
+    
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      res.sendFile(indexPath);
     });
   } else {
     const vite = await createViteServer({

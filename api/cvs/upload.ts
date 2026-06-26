@@ -5,11 +5,7 @@ import { logActivity } from '../_lib/utils.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
 import multer from 'multer';
 import mammoth from 'mammoth';
-
-// ESM compatibility
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse');
+import pdfParse from 'pdf-parse';
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
