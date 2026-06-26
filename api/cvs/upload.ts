@@ -14,7 +14,7 @@ const mammoth = require('mammoth');
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit for Vercel
+    limits: { fileSize: 4 * 1024 * 1024 } // Réduit à 4MB pour être sûr
 });
 
 const runMiddleware = (req: any, res: any, fn: any) => {
@@ -33,25 +33,25 @@ export const config = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    if (req.method === 'OPTIONS') {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        return res.status(200).json({ success: true });
-    }
+    console.log(`[API] Requête ${req.method} sur ${req.url}`);
+    
+    // Configuration CORS ultra-permissive pour le debug
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
 
-    if (!runCors(req, res)) return;
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
 
     if (req.method !== 'POST') {
         return res.status(405).json({ 
             success: false, 
-            error: 'Method not allowed', 
-            method: req.method, 
-            route: '/api/cvs/upload', 
-            allowedMethods: ['POST'] 
+            error: `La méthode ${req.method} n'est pas autorisée. Utilisez POST.` 
         });
     }
 
+    console.log('[CV Upload] Requête POST reçue');
     try {
         console.log('[CV Upload] Starting upload process...');
         const user = await getAuthenticatedUser(req, res);
