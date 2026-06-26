@@ -1,20 +1,19 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { runCors } from '../_lib/cors.js';
 import { getAuthenticatedUser } from '../_lib/middleware.js';
 import { getSupabase } from '../_lib/db.js';
 import { logActivity } from '../_lib/utils.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
+import multer from 'multer';
+import mammoth from 'mammoth';
 
-// ESM compatibility for CJS modules
+// ESM compatibility
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const multer = require('multer');
 const pdfParse = require('pdf-parse');
-const mammoth = require('mammoth');
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 4 * 1024 * 1024 } // Réduit à 4MB pour être sûr
+    limits: { fileSize: 4 * 1024 * 1024 }
 });
 
 const runMiddleware = (req: any, res: any, fn: any) => {
@@ -33,9 +32,10 @@ export const config = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    console.log(`[API] Requête ${req.method} sur ${req.url}`);
+    // Debug log pour voir ce que le serveur reçoit réellement
+    console.log(`[API] Requête reçue - Méthode: ${req.method} - URL: ${req.url}`);
     
-    // Configuration CORS ultra-permissive pour le debug
+    // Configuration CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
@@ -47,7 +47,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method !== 'POST') {
         return res.status(405).json({ 
             success: false, 
-            error: `La méthode ${req.method} n'est pas autorisée. Utilisez POST.` 
+            error: `Erreur 405: La méthode ${req.method} n'est pas autorisée sur cette route. Veuillez utiliser POST.`,
+            debug: { method: req.method, url: req.url }
         });
     }
 
