@@ -1,0 +1,5 @@
+api_backup/
+**/api_backup/**
+api/**/backup/**
+api/**/*.bak
+api/**/*.old

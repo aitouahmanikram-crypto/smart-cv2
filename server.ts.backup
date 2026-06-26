@@ -1,0 +1,2091 @@
+import express from "express";
+import path from "path";
+import fs from "fs";
+import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
+import dotenv from "dotenv";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import multer from "multer";
+
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
+
+import mammoth from "mammoth";
+import OpenAI from "openai";
+import { parseCVTextAndGenerateSummary, generateCoverLetter, analyzeJobMatch, generateCareerAdvice } from "./src/services/aiService.js";
+
+dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_default_secret_for_dev_only";
+
+// Configure multer for in-memory file uploads
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+const app = express();
+const PORT = 3000;
+import { supabase } from "./src/lib/supabase.js";
+
+// Parse text/json payloads
+app.use(express.json({ limit: "25mb" }));
+
+// Initialize GoogleGenAI client lazily if key is available
+let aiClient: GoogleGenAI | null = null;
+function getGemini(): GoogleGenAI {
+  if (!aiClient) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      console.warn("⚠️ GEMINI_API_KEY environment variable is not defined or is empty!");
+    }
+    aiClient = new GoogleGenAI({
+      apiKey: key || "MOCK_KEY_FOR_LINT",
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
+  }
+  return aiClient;
+}
+
+let openaiClient: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!openaiClient) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) {
+      console.warn("⚠️ OPENAI_API_KEY environment variable is not defined or is empty!");
+    }
+    openaiClient = new OpenAI({
+      apiKey: key || "MOCK_KEY_FOR_LINT",
+    });
+  }
+  return openaiClient;
+}
+
+// Secure token mechanism using jsonwebtoken
+function generateToken(userId: string, tenantId: string): string {
+  return jwt.sign({ userId, tenantId }, JWT_SECRET, { expiresIn: "24h" });
+}
+
+function verifyToken(token: string) {
+  try {
+    return jwt.verify(token, JWT_SECRET) as any;
+  } catch {
+    return null;
+  }
+}
+
+// Virtual Profile Metadata Parser (VPMP) for Cloud Supabase compatibility (since schema is REST-limited)
+export interface SystemSettings {
+  openaiApiKey: string;
+  appName: string;
+  logo: string;
+  maintenanceMode: boolean;
+}
+
+export let systemSettings: SystemSettings = {
+  openaiApiKey: process.env.OPENAI_API_KEY || "",
+  appName: "SmartCV AI",
+  logo: "Zap",
+  maintenanceMode: false
+};
+
+const SETTINGS_FILE = path.join(process.cwd(), "system_settings.json");
+
+export function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const data = fs.readFileSync(SETTINGS_FILE, "utf-8");
+      systemSettings = { ...systemSettings, ...JSON.parse(data) };
+    } else {
+      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(systemSettings, null, 2), "utf-8");
+    }
+  } catch (err) {
+    console.error("Failed to load settings:", err);
+  }
+}
+
+export function saveSettings(settings: SystemSettings) {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+    systemSettings = settings;
+  } catch (err) {
+    console.error("Failed to save settings:", err);
+  }
+}
+
+loadSettings();
+
+export function extendUserWithVirtualFields(user: any) {
+  if (!user) return null;
+  
+  // Default values
+  let role = "user";
+  let status = "active";
+  let bio = user.bio || "";
+  
+  // Hardcoded check for super admin
+  if (user.email === "admin@smartcvai.com") {
+    role = "super_admin";
+  }
+  
+  if (user.bio && typeof user.bio === "string" && user.bio.startsWith("__VIRTUAL_USER_DATA__:")) {
+    try {
+      const jsonStr = user.bio.slice("__VIRTUAL_USER_DATA__:".length);
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === "object") {
+        role = parsed.role || role;
+        status = parsed.status || status;
+        bio = parsed.real_bio !== undefined ? parsed.real_bio : "";
+      }
+    } catch (e) {
+      // ignore
+    }
+  } else if (user.bio && typeof user.bio === "string" && user.bio.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(user.bio);
+      if (parsed && typeof parsed === "object" && ("role" in parsed || "status" in parsed)) {
+        role = parsed.role || role;
+        status = parsed.status || status;
+        bio = parsed.real_bio !== undefined ? parsed.real_bio : "";
+      }
+    } catch {
+      // ignore
+    }
+  }
+  
+  return {
+    ...user,
+    role,
+    status,
+    bio
+  };
+}
+
+export function serializeUserBio(role: string, status: string, realBio: string) {
+  return "__VIRTUAL_USER_DATA__:" + JSON.stringify({
+    role,
+    status,
+    real_bio: realBio || ""
+  });
+}
+
+// Authentication Middleware
+async function authenticate(req: any, res: any, next: any) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or invalid authorization token" });
+  }
+  const token = authHeader.split(" ")[1];
+  const decoded = verifyToken(token);
+  if (!decoded) {
+    return res.status(401).json({ error: "Session expired or invalid token" });
+  }
+
+  try {
+    const { data: rawUser } = await supabase.from('users').select('*').eq('id', decoded.userId).maybeSingle();
+    if (!rawUser) {
+      return res.status(401).json({ error: "User session is invalid" });
+    }
+    const user = extendUserWithVirtualFields(rawUser);
+    if (user.status === "suspended") {
+      return res.status(403).json({ error: "Your account has been suspended. Please contact the administrator." });
+    }
+    
+    // Check maintenance mode
+    if (systemSettings.maintenanceMode && user.role !== "super_admin") {
+      return res.status(503).json({ error: "Application is currently undergoing maintenance. Please try again later." });
+    }
+
+    req.user = {
+      userId: user.id,
+      tenantId: user.tenantId,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      status: user.status,
+      title: user.title,
+      bio: user.bio,
+      createdAt: user.createdAt
+    };
+    next();
+  } catch (err: any) {
+    // Fail-safe fallback if Supabase query temporarily fails
+    req.user = decoded;
+    next();
+  }
+}
+
+async function authenticateAdmin(req: any, res: any, next: any) {
+  authenticate(req, res, () => {
+    if (req.user && req.user.role === "super_admin") {
+      next();
+    } else {
+      res.status(403).json({ error: "Unauthorized. Super Admin access only." });
+    }
+  });
+}
+
+// Seed / Initial Database schema
+interface DatabaseSchema {
+  users: Array<{ id: string; email: string; passwordHash: string; name: string; tenantId: string; title?: string; bio?: string; createdAt: string }>;
+  cvs: any[];
+  coverLetters: any[];
+  matches: any[];
+  jobs: any[];
+  activities: any[];
+}
+
+
+// Add global Activity Log Helper for event-driven telemetry (Issue #4, #6 resolved)
+async function logActivity(userId: string, tenantId: string, type: 'upload' | 'analysis' | 'letter' | 'match' | 'chat' | 'auth' | 'admin', message: string) {
+  try {
+    await supabase.from('activities').insert([{
+      id: `activity-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      userId,
+      tenantId,
+      type,
+      message,
+      timestamp: new Date().toISOString()
+    }]);
+  } catch (err) {
+    console.error("❌ Failed to log activity to Supabase:", err);
+  }
+}
+
+
+// --- API ROUTES ---
+
+// Health & Metadata check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "healthy", timestamp: new Date().toISOString(), platform: "SmartCV AI" });
+});
+
+// Authentication Routes
+app.post("/api/auth/register", async (req, res) => {
+  const { email, password, name } = req.body;
+  if (!email || !password || !name) return res.status(400).json({ error: "Name, email, and password are required fields" });
+
+  try {
+    const { data: existing } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).maybeSingle();
+    if (existing) return res.status(400).json({ error: "An account with this email address already exists" });
+
+    const userId = `user-${Date.now()}`;
+    const tenantId = `tenant-${Math.random().toString(36).substring(2, 7)}`;
+    const passwordHash = bcrypt.hashSync(password, 10);
+
+    const { error } = await supabase.from('users').insert([{
+      id: userId,
+      email: email.toLowerCase(),
+      passwordHash,
+      name,
+      tenantId,
+      createdAt: new Date().toISOString()
+    }]);
+
+    if (error) throw error;
+
+    const token = generateToken(userId, tenantId);
+    await logActivity(userId, tenantId, "auth", `Account registered for ${name}`);
+
+    res.status(201).json({ token, user: { id: userId, email: email.toLowerCase(), name, tenantId } });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  try {
+    const { data: rawUser, error } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).maybeSingle();
+    if (error || !rawUser) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    const isValid = bcrypt.compareSync(password, rawUser.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    const user = extendUserWithVirtualFields(rawUser);
+    const token = generateToken(user.id, user.tenantId);
+    
+    res.json({
+      token,
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.name, 
+        tenantId: user.tenantId, 
+        role: user.role,
+        status: user.status,
+        title: user.title, 
+        bio: user.bio 
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/auth/me", authenticate, async (req: any, res) => {
+  try {
+    const { data: rawUser, error } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
+    if (error || !rawUser) {
+      return res.status(404).json({ error: "User profile details not found" });
+    }
+    const user = extendUserWithVirtualFields(rawUser);
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenantId: user.tenantId,
+      role: user.role,
+      status: user.status,
+      title: user.title || "",
+      bio: user.bio || "",
+      createdAt: user.createdAt
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/profile/update", authenticate, async (req: any, res) => {
+    const { name, title, bio } = req.body;
+    try {
+        const { data: rawUser, error: getErr } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
+        if (!rawUser || getErr) return res.status(404).json({ error: "User not found" });
+
+        const userWithR = extendUserWithVirtualFields(rawUser);
+
+        const updatePayload: any = {};
+        if (name !== undefined) updatePayload.name = name;
+        if (title !== undefined) updatePayload.title = title;
+        
+        const nextRole = userWithR.role;
+        const nextStatus = userWithR.status;
+        const nextBio = bio !== undefined ? bio : userWithR.bio;
+
+        updatePayload.bio = serializeUserBio(nextRole, nextStatus, nextBio);
+
+        const { error: updateErr } = await supabase.from('users').update(updatePayload).eq('id', req.user.userId);
+        if (updateErr) throw updateErr;
+
+        res.json({ success: true, user: { ...userWithR, ...updatePayload, bio: nextBio } });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/jobs", async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('jobs').select('*').order('postedAt', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/jobs/create", authenticate, async (req: any, res) => {
+  const { title, company, location, category, type, description, requirements, salary } = req.body;
+  if (!title || !company || !description) return res.status(400).json({ error: "Title, company, and description are required" });
+
+  try {
+    const reqArray = Array.isArray(requirements) ? requirements : [requirements];
+    const newJob = {
+      id: `job-${Date.now()}`,
+      title, company, location: location || "Remote", category: category || "General", type: type || "Full-time",
+      description, requirements: reqArray.filter(Boolean), salary: salary || "Undisclosed", postedAt: new Date().toISOString()
+    };
+    const { error } = await supabase.from('jobs').insert([newJob]);
+    if (error) throw error;
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Added new job posting: ${title} at ${company}`);
+    res.status(201).json(newJob);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/cvs", authenticate, async (req: any, res) => {
+  try {
+    const { data, error } = await supabase.from('cvs').select('*').eq('userId', req.user.userId);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ... existing route ...
+app.post("/api/cvs/upload", authenticate, upload.single("cvFile"), async (req: any, res) => {
+  if (!req.file) return res.status(400).json({ error: "No CV file was uploaded." });
+  const fileName = req.file.originalname;
+  let textContent = "";
+
+  try {
+    if (req.file.mimetype === "application/pdf") {
+      const pdfData = await pdfParse(req.file.buffer);
+      textContent = pdfData.text;
+    } else if (req.file.mimetype.includes("wordprocessingml") || fileName.toLowerCase().endsWith(".docx")) {
+      const docxData = await mammoth.extractRawText({ buffer: req.file.buffer });
+      textContent = docxData.value;
+    } else if (req.file.mimetype === "text/plain" || fileName.toLowerCase().endsWith(".txt")) {
+      textContent = req.file.buffer.toString("utf-8");
+    } else {
+      return res.status(400).json({ error: "Unsupported file type." });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: "Failed to read file: " + err.message });
+  }
+
+  if (!textContent || textContent.trim().length < 50) return res.status(400).json({ error: "Not enough text found." });
+
+  try {
+    const openaiPayload = await parseCVTextAndGenerateSummary(textContent);
+    const score = openaiPayload.score || 72;
+    const cvId = `cv-${Date.now()}`;
+    
+    // State machine logic: VALIDATED if score >= 70, otherwise ANALYSED or REJECTED
+    // Following "additional instructions" for excellent status tracking
+    const status = score >= 80 ? "VALIDATED" : (score >= 60 ? "ANALYSED" : "REJECTED");
+
+    const analyzedCV = {
+      id: cvId, 
+      userId: req.user.userId, 
+      fileName: fileName || "Resume", 
+      status, // Updated status based on intelligence scoring
+      score,
+      grammarScore: openaiPayload.grammarScore || 70, 
+      impactScore: openaiPayload.impactScore || 65, 
+      skillsScore: openaiPayload.skillsScore || 75,
+      summary: openaiPayload.summary || "Parsed Resume", 
+      suggestions: openaiPayload.recommendations || [],
+      strengths: openaiPayload.strengths || [], 
+      weaknesses: openaiPayload.weaknesses || [], 
+      atsOptimizations: openaiPayload.atsOptimizations || [],
+      grammarImprovements: openaiPayload.grammarImprovements || [], 
+      recommendations: openaiPayload.recommendations || [],
+      skillsMatched: openaiPayload.skillsMatched || [], 
+      skillsMissing: openaiPayload.skillsMissing || [],
+      parsedDetails: {
+        ...(openaiPayload.parsedDetails || {}),
+        keywordMatching: openaiPayload.keywordMatching || 70,
+        formattingQuality: openaiPayload.formattingQuality || 70,
+        skillsCoverage: openaiPayload.skillsCoverage || 70,
+        experienceRelevance: openaiPayload.experienceRelevance || 70,
+        educationRelevance: openaiPayload.educationRelevance || 70,
+        hrQuestions: openaiPayload.hrQuestions || [],
+        technicalQuestions: openaiPayload.technicalQuestions || [],
+        behavioralQuestions: openaiPayload.behavioralQuestions || [],
+        situationalQuestions: openaiPayload.situationalQuestions || []
+      }, 
+      updatedAt: new Date().toISOString()
+    };
+
+    const { error } = await supabase.from('cvs').insert([analyzedCV]);
+    if (error) throw error;
+
+    // Log the event for telemetry dashboard (Issue #4 resolved)
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `CV "${fileName}" analyzed with score ${score}%. Status: ${status}.`);
+
+    res.json(analyzedCV);
+  } catch (error: any) {
+    res.status(500).json({ error: "Gemini parser failure: " + error.message });
+  }
+});
+
+// CV Versioning Routes
+app.post("/api/cvs/:id/versions", authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { cvContent, atsScore } = req.body;
+    try {
+        const { data: latestVersion } = await supabase
+            .from('cv_versions')
+            .select('versionNumber')
+            .eq('cvId', id)
+            .order('versionNumber', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        const versionNumber = (latestVersion?.versionNumber || 0) + 1;
+        const newVersion = {
+            id: `v-${Date.now()}`,
+            cvId: id,
+            userId: req.user.userId,
+            versionNumber,
+            cvContent,
+            atsScore,
+            createdAt: new Date().toISOString()
+        };
+        await supabase.from('cv_versions').insert([newVersion]);
+        res.json(newVersion);
+    } catch(err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/cvs/:id/versions", authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+        const { data, error } = await supabase
+            .from('cv_versions')
+            .select('*')
+            .eq('cvId', id)
+            .eq('userId', req.user.userId)
+            .order('versionNumber', { ascending: false });
+        if (error) throw error;
+        res.json(data || []);
+    } catch(err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/cvs/:id/versions/:versionId/restore", authenticate, async (req: any, res) => {
+    const { id, versionId } = req.params;
+    try {
+        const { data: version, error: vErr } = await supabase
+            .from('cv_versions')
+            .select('*')
+            .eq('id', versionId)
+            .eq('cvId', id)
+            .eq('userId', req.user.userId)
+            .maybeSingle();
+        
+        if (!version || vErr) return res.status(404).json({ error: "Version not found" });
+
+        await supabase
+            .from('cvs')
+            .update({ parsedDetails: version.cvContent, score: version.atsScore, updatedAt: new Date().toISOString() })
+            .eq('id', id);
+
+        res.json({ success: true });
+    } catch(err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- User Language Settings ---
+app.get("/api/settings/language", authenticate, async (req: any, res) => {
+  try {
+    const { data: user, error } = await supabase.from('users').select('language').eq('id', req.user.userId).maybeSingle();
+    if (error) throw error;
+    res.json({ language: user?.language || 'fr' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/settings/language", authenticate, async (req: any, res) => {
+  const { language } = req.body;
+  try {
+    const { error } = await supabase.from('users').update({ language }).eq('id', req.user.userId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- AI Career Advisor Endpoints ---
+app.get("/api/career-advice", authenticate, async (req: any, res) => {
+// ...
+  try {
+    const { data, error } = await supabase
+      .from('career_advice')
+      .select('*')
+      .eq('userId', req.user.userId);
+    
+    if (error) {
+      if (error.code === 'PGRST100' || error.code === 'PGRST205' || error.message?.includes('cache')) {
+        // Table not present in live schema yet, return mock/cached list based on user CVs to prevent blank page
+        const { data: cvs } = await supabase.from('cvs').select('*').eq('userId', req.user.userId);
+        if (cvs && cvs.length > 0) {
+          const simulatedAdvices = await Promise.all(cvs.map(async (cv) => {
+            const simulated = await generateCareerAdvice(cv);
+            return {
+              id: `adv-sim-${cv.id}`,
+              userId: req.user.userId,
+              cvId: cv.id,
+              career_paths: simulated.careerPaths,
+              salary_estimation: simulated.salaryEstimation,
+              skills_gap: simulated.skillsGap,
+              roadmap: simulated.roadmap,
+              createdAt: new Date().toISOString()
+            };
+          }));
+          return res.json(simulatedAdvices);
+        }
+        return res.json([]);
+      }
+      throw error;
+    }
+    res.json(data || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/career-advice/:cvId", authenticate, async (req: any, res) => {
+  const { cvId } = req.params;
+  try {
+    // 1. Attempt to fetch existing record from Supabase
+    const { data: existing, error } = await supabase
+      .from('career_advice')
+      .select('*')
+      .eq('cvId', cvId)
+      .eq('userId', req.user.userId)
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST205' && error.code !== 'PGRST100' && !error.message?.includes('cache')) {
+      throw error;
+    }
+
+    if (existing) {
+      return res.json(existing);
+    }
+
+    // 2. If not found or if the table doesn't exist, we generate or return based on CV details
+    const { data: cv, error: cvErr } = await supabase
+      .from('cvs')
+      .select('*')
+      .eq('id', cvId)
+      .eq('userId', req.user.userId)
+      .maybeSingle();
+
+    if (cvErr || !cv) {
+      return res.status(404).json({ error: "CV not found to advise upon" });
+    }
+
+    const adviceResult = await generateCareerAdvice(cv);
+    const adviceId = `adv-${Date.now()}`;
+    const careerAdviceRow = {
+      id: adviceId,
+      userId: req.user.userId,
+      cvId: cvId,
+      career_paths: adviceResult.careerPaths || [],
+      salary_estimation: adviceResult.salaryEstimation || {},
+      skills_gap: adviceResult.skillsGap || {},
+      roadmap: adviceResult.roadmap || {},
+      createdAt: new Date().toISOString()
+    };
+
+    // Try storing in Supabase (will fail gracefully if no table)
+    if (!error || (error.code !== 'PGRST205' && error.code !== 'PGRST100' && !error.message?.includes('cache'))) {
+      const { error: insertErr } = await supabase.from('career_advice').insert([careerAdviceRow]);
+      if (insertErr) {
+        console.warn("⚠️ Failed to write on-demand career_advice row:", insertErr.message);
+      }
+    }
+
+    res.json(careerAdviceRow);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/career-advice/generate", authenticate, async (req: any, res) => {
+  const { cvId } = req.body;
+  if (!cvId) return res.status(400).json({ error: "cvId is required" });
+
+  try {
+    const { data: cv, error: cvErr } = await supabase
+      .from('cvs')
+      .select('*')
+      .eq('id', cvId)
+      .eq('userId', req.user.userId)
+      .maybeSingle();
+
+    if (cvErr || !cv) {
+      return res.status(404).json({ error: "CV not found to analyze" });
+    }
+
+    const adviceResult = await generateCareerAdvice(cv);
+    const adviceId = `adv-${Date.now()}`;
+    const careerAdviceRow = {
+      id: adviceId,
+      userId: req.user.userId,
+      cvId: cvId,
+      career_paths: adviceResult.careerPaths || [],
+      salary_estimation: adviceResult.salaryEstimation || {},
+      skills_gap: adviceResult.skillsGap || {},
+      roadmap: adviceResult.roadmap || {},
+      createdAt: new Date().toISOString()
+    };
+
+    // Store in Supabase
+    const { error: insertErr } = await supabase.from('career_advice').insert([careerAdviceRow]);
+    if (insertErr) {
+      console.warn("⚠️ Failed to insert compiled career_advice row:", insertErr.message);
+    }
+
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `Generated AI Career Advice report for CV: ${cv.fileName}`);
+    res.json(careerAdviceRow);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/cvs/:id", authenticate, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { score, parsedDetails, strengths, weaknesses, atsOptimizations, recommendations } = req.body;
+
+    const { data: existing, error: fetchErr } = await supabase
+      .from("cvs")
+      .select("*")
+      .eq("id", id)
+      .eq("userId", req.user.userId)
+      .maybeSingle();
+
+    if (fetchErr || !existing) {
+      return res.status(404).json({ error: "CV not found or access denied" });
+    }
+
+    const updatePayload: Record<string, any> = {
+      updatedAt: new Date().toISOString()
+    };
+
+    if (score !== undefined) updatePayload.score = score;
+    if (parsedDetails !== undefined) {
+      updatePayload.parsedDetails = {
+        ...(existing.parsedDetails || {}),
+        ...parsedDetails
+      };
+    }
+    if (strengths !== undefined) updatePayload.strengths = strengths;
+    if (weaknesses !== undefined) updatePayload.weaknesses = weaknesses;
+    if (atsOptimizations !== undefined) updatePayload.atsOptimizations = atsOptimizations;
+    if (recommendations !== undefined) updatePayload.recommendations = recommendations;
+
+    const { data, error } = await supabase
+      .from("cvs")
+      .update(updatePayload)
+      .eq("id", id)
+      .select();
+
+    if (error) throw error;
+
+    // Create a new version record
+    const { data: latestVersion } = await supabase
+        .from('cv_versions')
+        .select('versionNumber')
+        .eq('cvId', id)
+        .order('versionNumber', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    const versionNumber = (latestVersion?.versionNumber || 0) + 1;
+    await supabase.from('cv_versions').insert([{
+        id: `v-${Date.now()}`,
+        cvId: id,
+        userId: req.user.userId,
+        versionNumber,
+        cvContent: updatePayload.parsedDetails || existing.parsedDetails,
+        atsScore: updatePayload.score || existing.score,
+        createdAt: new Date().toISOString()
+    }]);
+
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `CV ATS details updated and version ${versionNumber} created for: ${existing.fileName}`);
+    res.json(data[0]);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/cover-letters", authenticate, async (req: any, res) => {
+  try {
+    const { data, error } = await supabase.from('cover_letters').select('*').eq('userId', req.user.userId);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/cover-letters/generate", authenticate, async (req: any, res) => {
+  const { cvId, companyName, jobTitle, recipientName, jobDescription, experienceLevel, skills } = req.body;
+  if (!companyName || !jobTitle) return res.status(400).json({ error: "companyName and jobTitle required" });
+
+  let parsedText = "";
+  if (cvId) {
+    const { data: cv } = await supabase.from('cvs').select('parsedDetails').eq('id', cvId).eq('userId', req.user.userId).maybeSingle();
+    if (cv) { parsedText = JSON.stringify(cv.parsedDetails); }
+    else if (!experienceLevel && !skills) return res.status(404).json({ error: "CV not found" });
+  }
+
+  try {
+    const letterText = await generateCoverLetter({
+      jobDescription: jobDescription || "", 
+      parsedCvText: parsedText, 
+      companyName, 
+      jobTitle, 
+      experienceLevel: experienceLevel || "", 
+      skills: skills || "", 
+      recipientName: recipientName || ""
+    });
+    const newLetter = {
+      id: `letter-${Date.now()}`, cvId: cvId || null, userId: req.user.userId, recipientName: recipientName || "Hiring Manager",
+      companyName, jobTitle, jobDescription, generatedText: letterText, status: "COMPLETED", createdAt: new Date().toISOString()
+    };
+
+    const { error } = await supabase.from('cover_letters').insert([newLetter]);
+    if (error) throw error;
+
+    await logActivity(req.user.userId, req.user.tenantId, "letter", `Generated Cover Letter for ${jobTitle}`);
+    res.json(newLetter);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/matches", authenticate, async (req: any, res) => {
+  try {
+    const { data: cvs } = await supabase.from('cvs').select('id').eq('userId', req.user.userId);
+    if (!cvs || cvs.length === 0) return res.json([]);
+    const cvIds = cvs.map((c: any) => c.id);
+    const { data } = await supabase.from('matches').select('*').in('cvId', cvIds);
+    res.json(data || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/matches/analyze", authenticate, async (req: any, res) => {
+  const { cvId, jobId } = req.body;
+  if (!cvId || !jobId) return res.status(400).json({ error: "Missing params" });
+
+  try {
+    const { data: cv } = await supabase.from('cvs').select('parsedDetails').eq('id', cvId).eq('userId', req.user.userId).maybeSingle();
+    const { data: job } = await supabase.from('jobs').select('*').eq('id', jobId).maybeSingle();
+
+    if (!cv || !job) return res.status(404).json({ error: "CV or Job not found" });
+
+    const payload = await analyzeJobMatch(cv.parsedDetails, job);
+    const matchResult = {
+      id: `match-${Date.now()}`, cvId, jobId, matchScore: payload.matchScore || 50,
+      fitSummary: payload.fitSummary || "", strengths: payload.strengths || [], gaps: payload.gaps || [],
+      applicationStrategy: payload.applicationStrategy || "", createdAt: new Date().toISOString()
+    };
+
+    await supabase.from('matches').insert([matchResult]);
+    
+    // Log match activity for telemetry feed
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Analyzed match for job "${job.title}" with score ${matchResult.matchScore}%.`);
+
+    res.json(matchResult);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/matches/custom", authenticate, async (req: any, res) => {
+  const { cvId, jobTitle, companyName, jobDescription } = req.body;
+  if (!cvId || !jobTitle || !jobDescription) return res.status(400).json({ error: "Missing params" });
+
+  try {
+    const { data: cv } = await supabase.from('cvs').select('parsedDetails').eq('id', cvId).eq('userId', req.user.userId).maybeSingle();
+    if (!cv) return res.status(404).json({ error: "CV not found" });
+
+    const customJob = {
+      id: `custom-job-${Date.now()}`, title: jobTitle, company: companyName || "Custom Job", location: "Remote",
+      salary: "Negotiable", type: "Custom", requirements: [], description: jobDescription
+    };
+
+    const payload = await analyzeJobMatch(cv.parsedDetails, customJob);
+    const matchResult = {
+      id: `match-${Date.now()}`, cvId, jobId: customJob.id, customJob: customJob, matchScore: payload.matchScore || 50,
+      fitSummary: payload.fitSummary || "", strengths: payload.strengths || [], gaps: payload.gaps || [],
+      applicationStrategy: payload.applicationStrategy || "", createdAt: new Date().toISOString()
+    };
+
+    await supabase.from('matches').insert([matchResult]);
+
+    // Log custom match activity
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Analyzed custom match for "${jobTitle}" at "${companyName || 'Custom Corp'}" with score ${matchResult.matchScore}%.`);
+
+    res.json(matchResult);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/matches/saved", authenticate, async (req: any, res) => {
+  try {
+    const { data: savedActivities, error: actErr } = await supabase
+      .from('activities')
+      .select('*')
+      .eq('userId', req.user.userId)
+      .eq('type', 'saved_job');
+
+    if (actErr) throw actErr;
+    if (!savedActivities || savedActivities.length === 0) return res.json([]);
+
+    const matchIds = savedActivities.map((act: any) => act.message);
+    const { data: matches, error: matchErr } = await supabase
+      .from('matches')
+      .select('*')
+      .in('id', matchIds);
+
+    if (matchErr) throw matchErr;
+    res.json(matches || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/matches/save/:matchId", authenticate, async (req: any, res) => {
+  const { matchId } = req.params;
+  try {
+    const { data: match } = await supabase.from('matches').select('id').eq('id', matchId).maybeSingle();
+    if (!match) return res.status(404).json({ error: "Match not found" });
+
+    const { data: existing } = await supabase
+      .from('activities')
+      .select('id')
+      .eq('userId', req.user.userId)
+      .eq('type', 'saved_job')
+      .eq('message', matchId)
+      .maybeSingle();
+
+    if (existing) {
+      return res.json({ success: true, message: "Match already saved." });
+    }
+
+    const newSaved = {
+      id: `saved-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      userId: req.user.userId,
+      tenantId: req.user.tenantId || '',
+      type: 'saved_job',
+      message: matchId,
+      timestamp: new Date().toISOString()
+    };
+
+    const { error } = await supabase.from('activities').insert([newSaved]);
+    if (error) throw error;
+
+    res.json({ success: true, message: "Match successfully saved." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/matches/save/:matchId", authenticate, async (req: any, res) => {
+  const { matchId } = req.params;
+  try {
+    const { error } = await supabase
+      .from('activities')
+      .delete()
+      .eq('userId', req.user.userId)
+      .eq('type', 'saved_job')
+      .eq('message', matchId);
+
+    if (error) throw error;
+    res.json({ success: true, message: "Match removed from saved jobs." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/cvs/rewrite", authenticate, async (req: any, res) => {
+  const { text, type } = req.body;
+  if (!text) return res.status(400).json({ error: "Text required" });
+  try {
+    const ai = getGemini();
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Focus: Rewrite this ${type}\nText:\n${text}`,
+      config: { systemInstruction: "You are an executive CV writer. Rewrite professionally." }
+    });
+    res.json({ result: (response.text || "").trim() });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/chat/message", authenticate, async (req: any, res) => {
+  const { cvId, message, history } = req.body;
+  try {
+    let context = "Candidate is browsing.";
+    if (cvId) {
+      const { data: cv } = await supabase.from('cvs').select('*').eq('id', cvId).maybeSingle();
+      if (cv) context = `Skills: ${cv.parsedDetails?.skills?.join(", ")}`;
+    }
+    const ai = getGemini();
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: [{ role: "user", parts: [{ text: message }] }],
+      config: { systemInstruction: "Career Coach guidelines. Context: " + context }
+    });
+
+    await logActivity(req.user.userId, req.user.tenantId, "chat", `Chat query: ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`);
+    
+    res.json({ reply: (response.text || "").trim() });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/dashboard/stats", authenticate, async (req: any, res) => {
+  try {
+    const { data: cvs } = await supabase
+      .from('cvs')
+      .select('id, score, "updatedAt", "fileName"')
+      .eq('userId', req.user.userId)
+      .order('updatedAt', { ascending: true });
+    
+    const cvsArr = cvs || [];
+    
+    const { data: letters } = await supabase
+      .from('cover_letters')
+      .select('id, "createdAt"')
+      .eq('userId', req.user.userId);
+    const lettersArr = letters || [];
+
+    let matchesArr: any[] = [];
+    if (cvsArr.length > 0) {
+      const { data: matches } = await supabase
+        .from('matches')
+        .select('id, "createdAt", "matchScore"')
+        .in('cvId', cvsArr.map(c => c.id));
+      matchesArr = matches || [];
+    }
+
+    const { count: interviewTableCount } = await supabase
+      .from('interview_questions')
+      .select('*', { count: 'exact', head: true })
+      .eq('userId', req.user.userId);
+      
+    const { data: interviewActivities } = await supabase
+      .from('activities')
+      .select('id, timestamp')
+      .eq('userId', req.user.userId)
+      .eq('type', 'interview_questions');
+      
+    const interviewActsCount = interviewActivities?.length || 0;
+    const interviewsCount = (interviewTableCount || 0) + interviewActsCount;
+
+    // Compile timeline of activities
+    const { data: activities } = await supabase
+      .from('activities')
+      .select('*')
+      .eq('userId', req.user.userId)
+      .order('timestamp', { ascending: false })
+      .limit(15);
+
+    const averageScore = cvsArr.length > 0 
+        ? Math.round(cvsArr.reduce((acc, curr) => acc + (curr.score || 0), 0) / cvsArr.length)
+        : 0;
+
+    const stats = {
+      cvsCount: cvsArr.length,
+      averageScore: averageScore,
+      latestScore: cvsArr.length > 0 ? Math.max(...cvsArr.map(c => c.score || 0)) : 0,
+      lettersCount: lettersArr.length,
+      matchesCount: matchesArr.length,
+      interviewsCount: interviewsCount,
+      cvs: cvsArr,
+      letters: lettersArr,
+      matches: matchesArr,
+      recentActivity: activities || []
+    };
+    res.json(stats);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/interview-questions", authenticate, async (req: any, res) => {
+  const { cvId, category, questions } = req.body;
+  if (!cvId || !category || !questions) return res.status(400).json({ error: "Missing params" });
+
+  try {
+    const newRecord = {
+      id: `iq-${Date.now()}`,
+      userId: req.user.userId,
+      tenantId: req.user.tenantId || '',
+      type: 'interview_questions',
+      message: JSON.stringify({ cvId, category, questions }),
+      timestamp: new Date().toISOString()
+    };
+    
+    // Store in activities table as fallback because interview_questions table cannot be created dynamically
+    const { error } = await supabase.from('activities').insert([newRecord]);
+    if (error) {
+      throw error;
+    }
+    res.json({
+       id: newRecord.id,
+       userId: newRecord.userId,
+       cvId,
+       category,
+       questions,
+       createdAt: newRecord.timestamp
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/history", authenticate, async (req: any, res) => {
+  try {
+    const { data: cvs } = await supabase.from('cvs').select('*').eq('userId', req.user.userId).order('updatedAt', { ascending: false });
+    const { data: coverLetters } = await supabase.from('cover_letters').select('*').eq('userId', req.user.userId).order('createdAt', { ascending: false });
+    
+    // Collect cv ids to get matches
+    const cvIds = cvs ? cvs.map(c => c.id) : [];
+    let matches: any[] = [];
+    if (cvIds.length > 0) {
+      const { data } = await supabase.from('matches').select('*').in('cvId', cvIds).order('createdAt', { ascending: false });
+      matches = data || [];
+    }
+
+    let interviewQuestions: any[] = [];
+    try {
+      const { data, error } = await supabase.from('activities').select('*').eq('userId', req.user.userId).eq('type', 'interview_questions').order('timestamp', { ascending: false });
+      if (!error && data) {
+         interviewQuestions = data.map(act => {
+            const parsed = JSON.parse(act.message || '{}');
+            return {
+               id: act.id,
+               userId: act.userId,
+               cvId: parsed.cvId,
+               category: parsed.category,
+               questions: parsed.questions,
+               createdAt: act.timestamp
+            };
+         });
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    res.json({
+      analyses: cvs || [],
+      coverLetters: coverLetters || [],
+      matches: matches,
+      interviewQuestions: interviewQuestions
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/history/:type/:id", authenticate, async (req: any, res) => {
+  const { type, id } = req.params;
+  try {
+    let tableName = "";
+    if (type === "analysis") tableName = "cvs";
+    else if (type === "coverLetter") tableName = "cover_letters";
+    else if (type === "match") tableName = "matches";
+    else if (type === "interview") tableName = "activities";
+    else return res.status(400).json({ error: "Invalid type" });
+
+    // Ensure they own it. For 'cvs', 'cover_letters', 'activities', userId exists. For 'matches', need to check via cvs.
+    if (tableName === 'matches') {
+       const { data: match } = await supabase.from('matches').select('cvId').eq('id', id).maybeSingle();
+       if (match) {
+         const { data: cv } = await supabase.from('cvs').select('userId').eq('id', match.cvId).maybeSingle();
+         if (cv && cv.userId === req.user.userId) {
+            await supabase.from('matches').delete().eq('id', id);
+            // Also delete from activities bookmark with this match ID as message
+            await supabase.from('activities').delete().eq('userId', req.user.userId).eq('type', 'saved_job').eq('message', id);
+         } else return res.status(403).json({ error: "Unauthorized" });
+       }
+    } else if (tableName === 'cvs') {
+       // Cascade deletion of references to prevent foreign key errors
+       // 1. Reference: cover_letters. Set cvId = null
+       await supabase.from('cover_letters').update({ cvId: null }).eq('cvId', id).eq('userId', req.user.userId);
+
+       // 2. Reference: job_matches. Set cvId = null
+       try {
+         await supabase.from('job_matches').update({ cvId: null }).eq('cvId', id).eq('userId', req.user.userId);
+       } catch (e) {}
+
+       // 3. Reference: matches. Must delete matches referencing this cvId
+       await supabase.from('matches').delete().eq('cvId', id);
+
+       // 4. Reference: interview_questions. Must delete
+       try {
+         await supabase.from('interview_questions').delete().eq('cvId', id).eq('userId', req.user.userId);
+       } catch (e) {}
+
+       // 5. Reference: activities containing type="interview_questions" and tracking this cvId in JSON message
+       try {
+         const { data: acts } = await supabase.from('activities').select('id, message').eq('userId', req.user.userId).eq('type', 'interview_questions');
+         if (acts) {
+            for (const act of acts) {
+               try {
+                  const parsed = JSON.parse(act.message || '{}');
+                  if (parsed.cvId === id) {
+                     await supabase.from('activities').delete().eq('id', act.id).eq('userId', req.user.userId);
+                  }
+               } catch (e) {}
+            }
+         }
+       } catch (e) {}
+
+       // Finally, delete the CV record itself
+       const { error: cvErr } = await supabase.from('cvs').delete().eq('id', id).eq('userId', req.user.userId);
+       if (cvErr) throw cvErr;
+    } else {
+       await supabase.from(tableName).delete().eq('id', id).eq('userId', req.user.userId);
+    }
+    
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SUPER ADMIN SYSTEM API SUITE ---
+
+app.get("/api/admin/stats", authenticateAdmin, async (req: any, res) => {
+  try {
+    const [
+      { count: totalUsers },
+      { count: totalCvs },
+      { count: totalLetters },
+      { count: totalMatches },
+      { count: totalInterviewsActs },
+      { count: totalJobs }
+    ] = await Promise.all([
+      supabase.from('users').select('*', { count: 'exact', head: true }),
+      supabase.from('cvs').select('*', { count: 'exact', head: true }),
+      supabase.from('cover_letters').select('*', { count: 'exact', head: true }),
+      supabase.from('matches').select('*', { count: 'exact', head: true }),
+      supabase.from('activities').select('*', { count: 'exact', head: true }).eq('type', 'interview_questions'),
+      supabase.from('jobs').select('*', { count: 'exact', head: true })
+    ]);
+
+    // Fallback interview question count from separate table if accessible
+    let totalInterviewsTable = 0;
+    try {
+      const { count } = await supabase.from('interview_questions').select('*', { count: 'exact', head: true });
+      totalInterviewsTable = count || 0;
+    } catch (e) {}
+
+    const totalInterviews = (totalInterviewsActs || 0) + totalInterviewsTable;
+
+    // Fetch dates for aggregations
+    const { data: usersData } = await supabase.from('users').select('createdAt');
+    const { data: cvsData } = await supabase.from('cvs').select('updatedAt, score');
+
+    // 1. New Users Per Month
+    const usersPerMonth: Record<string, number> = {};
+    (usersData || []).forEach(u => {
+      if (u.createdAt) {
+        const month = String(u.createdAt).substring(0, 7); // YYYY-MM
+        usersPerMonth[month] = (usersPerMonth[month] || 0) + 1;
+      }
+    });
+    const newUsersChart = Object.entries(usersPerMonth)
+      .map(([month, count]) => ({ month, count }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-6);
+
+    // 2. CVs Per Month
+    const cvsPerMonth: Record<string, number> = {};
+    (cvsData || []).forEach(c => {
+      const dateStr = c.updatedAt;
+      if (dateStr) {
+        const month = String(dateStr).substring(0, 7);
+        cvsPerMonth[month] = (cvsPerMonth[month] || 0) + 1;
+      }
+    });
+    const cvAnalysesChart = Object.entries(cvsPerMonth)
+      .map(([month, count]) => ({ month, count }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-6);
+
+    // 3. ATS Score Distribution
+    let scoreRanges = {
+      "Below 50": 0,
+      "50-59": 0,
+      "60-69": 0,
+      "70-79": 0,
+      "80-89": 0,
+      "90-100": 0
+    };
+    (cvsData || []).forEach(c => {
+      const score = c.score || 0;
+      if (score < 50) scoreRanges["Below 50"]++;
+      else if (score < 60) scoreRanges["50-59"]++;
+      else if (score < 70) scoreRanges["60-69"]++;
+      else if (score < 80) scoreRanges["70-79"]++;
+      else if (score < 90) scoreRanges["80-89"]++;
+      else scoreRanges["90-100"]++;
+    });
+    const atsDistributionChart = Object.entries(scoreRanges).map(([range, count]) => ({ range, count }));
+
+    // 4. Most Used Features
+    const featureFrequency = {
+      "CV Upload": totalCvs || 0,
+      "CV Analysis": totalCvs || 0,
+      "Cover Letters": totalLetters || 0,
+      "Job Matching": totalMatches || 0,
+      "Interview Prep": totalInterviews || 0
+    };
+    const mostUsedFeaturesChart = Object.entries(featureFrequency).map(([feature, count]) => ({ feature, count }));
+
+    res.json({
+      summary: {
+        totalUsers: totalUsers || 0,
+        totalCvs: totalCvs || 0,
+        totalAnalyses: totalCvs || 0,
+        totalCoverLetters: totalLetters || 0,
+        totalJobMatches: totalMatches || 0,
+        totalInterviewSessions: totalInterviews || 0,
+        totalJobOffers: totalJobs || 0
+      },
+      charts: {
+        newUsers: newUsersChart,
+        cvAnalyses: cvAnalysesChart,
+        atsDistribution: atsDistributionChart,
+        mostUsedFeatures: mostUsedFeaturesChart
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/seed-demo", authenticateAdmin, async (req: any, res) => {
+  try {
+    console.log("♻️ Triggering cascading clean of previous seeds to prevent primary key collisions...");
+
+    // Selective purging of previously seeded records based on the prefix 'seeded-%'
+    await supabase.from('activities').delete().like('id', 'seeded-%');
+    try {
+      await supabase.from('job_matches').delete().like('id', 'seeded-%');
+    } catch (e) {}
+    await supabase.from('matches').delete().like('id', 'seeded-%');
+    await supabase.from('cover_letters').delete().like('id', 'seeded-%');
+    try {
+      await supabase.from('analyses').delete().like('id', 'seeded-%');
+    } catch (e) {}
+    await supabase.from('cvs').delete().like('id', 'seeded-%');
+    await supabase.from('users').delete().like('id', 'seeded-%');
+    await supabase.from('jobs').delete().like('id', 'seeded-%');
+    try {
+      await supabase.from('job_offers').delete().like('id', 'seeded-%');
+    } catch (e) {}
+
+    console.log("👥 Generating date-tiered users...");
+    const baseDateForIndex = (index: number, total: number) => {
+      const now = new Date();
+      let monthOffset = 0;
+      if (index < total * 0.1) monthOffset = 5;
+      else if (index < total * 0.25) monthOffset = 4;
+      else if (index < total * 0.45) monthOffset = 3;
+      else if (index < total * 0.70) monthOffset = 2;
+      else if (index < total * 0.90) monthOffset = 1;
+      else monthOffset = 0;
+
+      const targetMonth = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1);
+      const randomDay = Math.floor(Math.random() * 28) + 1;
+      const randomHour = Math.floor(Math.random() * 24);
+      const randomMin = Math.floor(Math.random() * 60);
+      const date = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), randomDay, randomHour, randomMin);
+      return date.toISOString();
+    };
+
+    const firstNames = ["James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth", "David", "Barbara", "Richard", "Susan", "Joseph", "Jessica", "Thomas", "Sarah", "Charles", "Karen", "Christopher", "Nancy", "Daniel", "Lisa", "Matthew", "Betty", "Anthony", "Margaret", "Mark", "Sandra", "Donald", "Ashley", "Steven", "Kimberly", "Paul", "Emily", "Andrew", "Donna", "Joshua", "Michelle", "Kenneth", "Dorothy", "Kevin", "Carol", "Brian", "Amanda", "George", "Melissa", "Edward", "Deborah", "Ronald", "Stephanie", "Timothy", "Rebecca", "Jason", "Sharon", "Jeffrey", "Laura", "Ryan", "Cynthia", "Jacob", "Kathleen", "Gary", "Amy", "Nicholas", "Shirley", "Eric", "Angela", "Jonathan", "Helen", "Stephen", "Anna", "Larry", "Brenda", "Justin", "Pamela", "Scott", "Nicole", "Brandon", "Samantha", "Benjamin", "Katherine", "Gregory", "Christine", "Samuel", "Debra", "Patrick", "Rachel", "Alexander", "Carolyn", "Jack", "Janet", "Dennis", "Maria", "Jerry", "Heather", "Tyler", "Aaron", "Diane"];
+    const lastNames = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker", "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill", "Flores", "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera", "Campbell", "Mitchell", "Carter", "Roberts"];
+    const domains = ["gmail.com", "yahoo.com", "outlook.com", "smartcvai.com", "techops.org", "engineer.io", "cloudscale.net"];
+
+    const userTitles = [
+      "Senior Full Stack Software Architect",
+      "Cloud Solutions Engineer",
+      "DevOps Pipeline Specialist",
+      "Data Scientist & AI Architect",
+      "Lead UI/UX Architect",
+      "Product Manager",
+      "Cybersecurity Threat Analyst",
+      "Sales Engineer Specialist",
+      "Database Operations Engineer",
+      "Technical Lead Developer"
+    ];
+
+    const userBios = [
+      "Enthusiastic builder of digital infrastructure and next-gen SaaS portals with multi-tenant designs.",
+      "Passionate coder focused on server-authoritative logic, highly optimized queries, and clean reactive components.",
+      "Deep tech background specializing in container orchestration, high availability architectures, and automated testing.",
+      "A senior visionary bridging beautiful accessible designs with fast server-side processing and telemetry integrations.",
+      "Analytical specialist driven by data models, predictive algorithms, cloud metrics, and scalable API pipelines."
+    ];
+
+    const genericPasswordHash = bcrypt.hashSync("Password123", 10);
+
+    // We seed 98 users, plus req.user (already exists) and any other admin, rounding to ~100
+    const seededUsers: any[] = [];
+    for (let i = 1; i <= 98; i++) {
+      const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
+      const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
+      const name = `${firstName} ${lastName}`;
+      const email = `seeded.user.${i}@${domains[Math.floor(Math.random() * domains.length)]}`.toLowerCase();
+      const tenantId = `tenant-seeded-${Date.now()}-${i}`;
+      const title = userTitles[Math.floor(Math.random() * userTitles.length)];
+      const bio = userBios[Math.floor(Math.random() * userBios.length)];
+      const createdAt = baseDateForIndex(i, 98);
+      
+      const serialized = serializeUserBio("user", "active", bio);
+
+      seededUsers.push({
+        id: `seeded-usr-${i}-${Date.now()}`,
+        email,
+        passwordHash: genericPasswordHash,
+        name,
+        tenantId,
+        title,
+        bio: serialized,
+        createdAt
+      });
+    }
+
+    // Insert 100 users in chunks of 50 to guarantee performance
+    for (let i = 0; i < seededUsers.length; i += 50) {
+      const chunk = seededUsers.slice(i, i + 50);
+      const { error: userErr } = await supabase.from('users').insert(chunk);
+      if (userErr) throw userErr;
+    }
+
+    // 2. Generate 50 Jobs (Jobs & Job Offers)
+    const jobTitles = [
+      "Senior Frontend Engineer (React/Tailwind)",
+      "Principal Backend Architect (Node.js/Go)",
+      "Cloud Security Advisor",
+      "Lead DevOps Engineer (Kubernetes/AWS)",
+      "Director of Engineering (SaaS Platforms)",
+      "Data Scientist (Machine Learning & Analytics)",
+      "Product Designer (Figma/Tailwind)",
+      "AI Prompt Specialist",
+      "Staff Database Administrator",
+      "Technical Project Manager"
+    ];
+
+    const companyNames = [
+      "Google Cloud", "Netflix Inc.", "Microsoft Corp.", "Apple", "Stripe", "Datadog", 
+      "CrowdStrike", "Tesla", "Vercel", "OpenAI", "Airbnb", "Uber Technologies"
+    ];
+
+    const jobLocations = [
+      "San Francisco, CA (Hybrid)", "New York, NY (Onsite)", "Austin, TX (Remote)", 
+      "Seattle, WA (Remote)", "London, UK (Hybrid)", "Paris, France (Onsite)", 
+      "Berlin, Germany (Remote)", "Tokyo, Japan (Hybrid)"
+    ];
+
+    const jobCategories = [
+      "SaaS Platform", "Cybersecurity", "Data Architecture", "Core Infrastructure", "UI/UX Engineering"
+    ];
+
+    const jobTypes = [
+      "Full-Time", "Contract", "Part-Time", "Remote"
+    ];
+
+    const skillsCatalog = [
+      ["React", "TypeScript", "Tailwind CSS", "Vite", "State Managers", "Framer Motion"],
+      ["Node.js", "Express", "Go", "PostgreSQL", "Redis", "REST APIs", "GraphQL"],
+      ["Docker", "Kubernetes", "AWS", "Terraform", "CI/CD Pipelines", "Github Actions"],
+      ["Python", "PyTorch", "SQL", "Pandas", "Scikit-Learn", "BigQuery"],
+      ["Figma", "Design Systems", "Tailwind CSS", "User Experience Research", "Prototyping"],
+      ["Cybersecurity Standards", "OIDC/OAuth", "Penetration Testing", "WAF Rules"]
+    ];
+
+    const seededJobs: any[] = [];
+    for (let i = 1; i <= 50; i++) {
+      const index = i - 1;
+      const title = jobTitles[index % jobTitles.length];
+      const company = companyNames[index % companyNames.length];
+      const location = jobLocations[index % jobLocations.length];
+      const category = jobCategories[index % jobCategories.length];
+      const type = jobTypes[index % jobTypes.length];
+      const reqSkills = skillsCatalog[index % skillsCatalog.length];
+      const salary = `$${100 + (index % 5) * 20}k - $${140 + (index % 5) * 25}k / year`;
+      const description = `Join the team at ${company} as a ${title}. In this role, you will lead development, configure optimized architectures, and collaborate across technical boundaries. Requirements include solid modern skills and a passion for automation.`;
+      const postedAt = baseDateForIndex(i, 50);
+
+      seededJobs.push({
+        id: `seeded-job-${i}-${Date.now()}`,
+        title,
+        company,
+        location,
+        category,
+        type,
+        description,
+        requirements: reqSkills,
+        salary,
+        postedAt
+      });
+    }
+
+    const { error: jobsErr } = await supabase.from('jobs').insert(seededJobs);
+    if (jobsErr) throw jobsErr;
+
+    // Dual-seed job_offers as well for frontends using it
+    const seededJobOffers = seededJobs.map((js, index) => ({
+      id: js.id,
+      job_title: js.title,
+      company_name: js.company,
+      location: js.location,
+      industry: js.category,
+      employment_type: js.type,
+      experience_level: index % 3 === 0 ? "Senior" : (index % 3 === 1 ? "Mid-Level" : "Lead"),
+      salary_range: js.salary,
+      job_description: js.description,
+      required_skills: js.requirements,
+      created_at: js.postedAt
+    }));
+
+    try {
+      await supabase.from('job_offers').insert(seededJobOffers);
+    } catch(e) {}
+
+    // 3. Generate 200 CV Analyses
+    // Distribute them evenly across users to achieve a representative set.
+    // We will use 100 users list: newly generated plus current user
+    const usersForResumes = [...seededUsers];
+    // Check if current user is already in there, if not add
+    if (!usersForResumes.find(u => u.id === req.user.userId)) {
+      usersForResumes.push({ id: req.user.userId, name: req.user.name || "Main User", email: req.user.email });
+    }
+
+    const cvFileNames = [
+      "Cloud_Architect_Resume.pdf",
+      "Staff_Developer_Portfolio.pdf",
+      "Director_Engineering_Executive_CV.pdf",
+      "Data_Scientist_CV_2026.pdf",
+      "Senior_Front_End_Resume.pdf",
+      "Product_Planner_Resume.pdf",
+      "Cybersecurity_Lead_CV.pdf",
+      "SaaS_Solutions_Developer_Portfolio.pdf"
+    ];
+
+    const seededCvs: any[] = [];
+    const seededAnalyses: any[] = [];
+
+    let cvCounter = 1;
+    // Deliver exactly 200 resumes
+    for (let i = 0; i < 200; i++) {
+      const associatedUser = usersForResumes[i % usersForResumes.length];
+      const id = `seeded-cv-${cvCounter}-${Date.now()}`;
+      const fileName = cvFileNames[cvCounter % cvFileNames.length];
+      const score = Math.floor(70 + (cvCounter % 3) * 8 + (cvCounter % 5) * 2.5 + Math.random() * 5); // normally distributed high scores 70 - 98
+      const date = baseDateForIndex(cvCounter, 200);
+
+      const parsedDetails = {
+        name: associatedUser.name,
+        email: associatedUser.email,
+        phone: `+1 (555) ${100 + cvCounter}-${1000 + cvCounter}`,
+        summary: `A results-driven professional specializing in strategic projects, scalable pipelines, development quality, and interactive customer portals.`,
+        skills: ["React", "TypeScript", "Node.js", "Docker", "Database Tuning", "SaaS Architectural Patterns"],
+        experience: [
+          {
+            role: "Main Developer",
+            company: "Tech Enterprise",
+            duration: "3 years",
+            description: "Responsible for full stack developments, state machine controls, and secure multi-tenant deployments."
+          }
+        ],
+        education: [
+          {
+            degree: "B.S. Computer Engineering",
+            school: "State Engineering University",
+            duration: "4 years"
+          }
+        ],
+        formattingQuality: 85,
+        skillsCoverage: 80,
+        experienceRelevance: 90,
+        educationRelevance: 85,
+        hrQuestions: ["Describe your team leadership experience."],
+        technicalQuestions: ["How do you handle race conditions?"],
+        behavioralQuestions: ["Tell me about a difficult sprint."]
+      };
+
+      seededCvs.push({
+        id,
+        userId: associatedUser.id,
+        fileName,
+        status: "analyzed",
+        score,
+        parsedDetails,
+        createdAt: date,
+        updatedAt: date
+      });
+
+      seededAnalyses.push({
+        id: `seeded-anal-${cvCounter}-${Date.now()}`,
+        userId: associatedUser.id,
+        updatedAt: date
+      });
+
+      cvCounter++;
+    }
+
+    // Insert CVs in chunks of 50
+    for (let i = 0; i < seededCvs.length; i += 50) {
+      await supabase.from('cvs').insert(seededCvs.slice(i, i + 50));
+      try {
+        await supabase.from('analyses').insert(seededAnalyses.slice(i, i + 50));
+      } catch(e) {}
+    }
+
+    // 4. Generate 100 Cover Letters
+    const seededCoverLetters: any[] = [];
+    for (let i = 1; i <= 100; i++) {
+      const associatedUser = usersForResumes[i % usersForResumes.length];
+      const userCv = seededCvs.find(cv => cv.userId === associatedUser.id);
+      const cvId = userCv ? userCv.id : null;
+      const targetJob = seededJobs[i % seededJobs.length];
+      const date = baseDateForIndex(i, 100);
+
+      seededCoverLetters.push({
+        id: `seeded-cl-${i}-${Date.now()}`,
+        cvId,
+        userId: associatedUser.id,
+        recipientName: "Hiring Ambassador",
+        companyName: targetJob.company,
+        jobTitle: targetJob.title,
+        content: `Dear Hiring Team,\n\nI am thrilled to express my strong candidacy for the ${targetJob.title} position at ${targetJob.company}. Based on my extensive experience documented in my attached résumé, I have built highly available systems and led multi-tenant SaaS developments. I would welcome the opportunity to discuss how my skill set aligns with your team's tactical goals.\n\nSincerely,\n${associatedUser.name}`,
+        createdAt: date
+      });
+    }
+
+    for (let i = 0; i < seededCoverLetters.length; i += 50) {
+      await supabase.from('cover_letters').insert(seededCoverLetters.slice(i, i + 50));
+    }
+
+    // 5. Generate 100 Job Matches
+    const seededMatches: any[] = [];
+    const seededJobMatches: any[] = [];
+    for (let i = 1; i <= 100; i++) {
+      const associatedUser = usersForResumes[i % usersForResumes.length];
+      const userCv = seededCvs.find(cv => cv.userId === associatedUser.id);
+      const cvId = userCv ? userCv.id : null;
+      const targetJob = seededJobs[i % seededJobs.length];
+      const date = baseDateForIndex(i, 100);
+      const matchScore = Math.floor(65 + (i % 4) * 8 + Math.random() * 5);
+
+      if (cvId) {
+        seededMatches.push({
+          id: `seeded-match-${i}-${Date.now()}`,
+          cvId,
+          jobId: targetJob.id,
+          customJob: null,
+          matchScore,
+          fitSummary: `Strong alignment with the core requirements of ${targetJob.company}. The candidate possesses 85% of the requested skill set, demonstrating clear proficiencies in targeted domains.`,
+          strengths: ["Strong development experience in equivalent tech stack", "Verified production history"],
+          gaps: ["Lacks secondary domain certificate (CISSP, eBPF)"],
+          applicationStrategy: `Ensure you highlight key projects running equivalent stacks in your opening summaries.`,
+          createdAt: date
+        });
+
+        seededJobMatches.push({
+          id: `seeded-jm-${i}-${Date.now()}`,
+          cvId,
+          userId: associatedUser.id,
+          matchScore,
+          createdAt: date
+        });
+      }
+    }
+
+    for (let i = 0; i < seededMatches.length; i += 50) {
+      await supabase.from('matches').insert(seededMatches.slice(i, i + 50));
+      try {
+        await supabase.from('job_matches').insert(seededJobMatches.slice(i, i + 50));
+      } catch (e) {}
+    }
+
+    // 6. Generate 100 Interview Sessions
+    const seededInterviewSessions: any[] = [];
+    for (let i = 1; i <= 100; i++) {
+      const associatedUser = usersForResumes[i % usersForResumes.length];
+      const userCv = seededCvs.find(cv => cv.userId === associatedUser.id);
+      const cvId = userCv ? userCv.id : null;
+      const date = baseDateForIndex(i, 100);
+
+      const mockQuestions = [
+        "What is your primary methodology when analyzing system requirements?",
+        "How do you design a database schema for consistent multi-tenant separation?",
+        "Describe a challenging state-transition synchronization bug you fixed.",
+        "What metrics do you track to measure continuous deployment quality across pipelines?"
+      ];
+
+      seededInterviewSessions.push({
+        id: `seeded-is-${i}-${Date.now()}`,
+        userId: associatedUser.id,
+        tenantId: associatedUser.tenantId || '',
+        type: "interview_questions",
+        message: JSON.stringify({
+          cvId,
+          category: "Technical & Architecture",
+          questions: mockQuestions
+        }),
+        timestamp: date
+      });
+    }
+
+    for (let i = 0; i < seededInterviewSessions.length; i += 50) {
+      await supabase.from('activities').insert(seededInterviewSessions.slice(i, i + 50));
+    }
+
+    console.log("🏁 Programmatic Super Admin Demo Seeding was completed successfully!");
+    res.json({
+      success: true,
+      message: "Seeded 100 users, 200 CV analyses, 100 cover letters, 100 job matches, 50 job offers, and 100 interview sessions successfully!"
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/admin/users", authenticateAdmin, async (req: any, res) => {
+  try {
+    const { q } = req.query;
+    const { data: users, error } = await supabase.from('users').select('*').order('createdAt', { ascending: false });
+    if (error) throw error;
+
+    let extendedUsers = (users || []).map(extendUserWithVirtualFields);
+
+    if (q) {
+      const searchLower = String(q).toLowerCase();
+      extendedUsers = extendedUsers.filter(u => 
+        (u.name && u.name.toLowerCase().includes(searchLower)) ||
+        (u.email && u.email.toLowerCase().includes(searchLower)) ||
+        (u.role && u.role.toLowerCase().includes(searchLower)) ||
+        (u.status && u.status.toLowerCase().includes(searchLower))
+      );
+    }
+
+    res.json(extendedUsers);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/admin/users/:id", authenticateAdmin, async (req: any, res) => {
+  const { id } = req.params;
+  const { name, title, bio, role, status } = req.body;
+  try {
+    const { data: rawUser, error: getErr } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+    if (!rawUser || getErr) return res.status(404).json({ error: "User not found" });
+
+    const userWithR = extendUserWithVirtualFields(rawUser);
+
+    const updatePayload: any = {};
+    if (name !== undefined) updatePayload.name = name;
+    if (title !== undefined) updatePayload.title = title;
+    
+    const nextRole = role !== undefined ? role : userWithR.role;
+    const nextStatus = status !== undefined ? status : userWithR.status;
+    const nextBio = bio !== undefined ? bio : userWithR.bio;
+
+    updatePayload.bio = serializeUserBio(nextRole, nextStatus, nextBio);
+
+    const { error: updateErr } = await supabase.from('users').update(updatePayload).eq('id', id);
+    if (updateErr) throw updateErr;
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/admin/users/:id", authenticateAdmin, async (req: any, res) => {
+  const { id } = req.params;
+  try {
+    if (id === req.user.userId) {
+      return res.status(400).json({ error: "You cannot delete your own account." });
+    }
+
+    // 1. Get all CV IDs for this user
+    const { data: userCvs } = await supabase.from('cvs').select('id').eq('userId', id);
+    const cvIds = userCvs ? userCvs.map(cv => cv.id) : [];
+
+    // 2. Delete matches referencing this user's cvs
+    if (cvIds.length > 0) {
+      await supabase.from('matches').delete().in('cvId', cvIds);
+    }
+
+    // 3. Delete from interview_questions for this user
+    try {
+      await supabase.from('interview_questions').delete().eq('userId', id);
+    } catch (e) {}
+
+    // 4. Delete cover_letters for this user
+    await supabase.from('cover_letters').delete().eq('userId', id);
+
+    // 5. Delete job_matches for this user
+    try {
+      await supabase.from('job_matches').delete().eq('userId', id);
+    } catch (e) {}
+
+    // 6. Delete activities for this user
+    await supabase.from('activities').delete().eq('userId', id);
+
+    // 7. Delete cvs for this user
+    await supabase.from('cvs').delete().eq('userId', id);
+
+    // 8. Finally, delete user itself
+    const { error } = await supabase.from('users').delete().eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/users/:id/reset-password", authenticateAdmin, async (req: any, res) => {
+  const { id } = req.params;
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ error: "Password is required" });
+  try {
+    const passwordHash = bcrypt.hashSync(password, 10);
+    const { error } = await supabase.from('users').update({ passwordHash }).eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/admin/jobs", authenticateAdmin, async (req: any, res) => {
+  try {
+    const { q } = req.query;
+    const { data: jobs, error } = await supabase.from('jobs').select('*').order('postedAt', { ascending: false });
+    if (error) throw error;
+    
+    let filtered = jobs || [];
+    if (q) {
+      const searchLower = String(q).toLowerCase();
+      filtered = filtered.filter(j =>
+        (j.title && j.title.toLowerCase().includes(searchLower)) ||
+        (j.company && j.company.toLowerCase().includes(searchLower)) ||
+        (j.location && j.location.toLowerCase().includes(searchLower)) ||
+        (j.description && j.description.toLowerCase().includes(searchLower))
+      );
+    }
+    res.json(filtered);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/jobs", authenticateAdmin, async (req: any, res) => {
+  const { title, company, location, category, type, description, requirements, salary } = req.body;
+  if (!title || !company || !description) {
+    return res.status(400).json({ error: "Title, company, and description are required fields" });
+  }
+  try {
+    const newJob = {
+      id: `job-${Date.now()}`,
+      title,
+      company,
+      location: location || "",
+      category: category || "Other",
+      type: type || "Full-Time",
+      description,
+      requirements: Array.isArray(requirements) ? requirements : (typeof requirements === 'string' ? [requirements] : []),
+      salary: salary || "",
+      postedAt: new Date().toISOString()
+    };
+
+    const { error } = await supabase.from('jobs').insert([newJob]);
+    if (error) throw error;
+
+    res.status(201).json(newJob);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/admin/jobs/:id", authenticateAdmin, async (req: any, res) => {
+  const { id } = req.params;
+  const { title, company, location, category, type, description, requirements, salary } = req.body;
+  try {
+    const updatePayload: any = {};
+    if (title !== undefined) updatePayload.title = title;
+    if (company !== undefined) updatePayload.company = company;
+    if (location !== undefined) updatePayload.location = location;
+    if (category !== undefined) updatePayload.category = category;
+    if (type !== undefined) updatePayload.type = type;
+    if (description !== undefined) updatePayload.description = description;
+    if (requirements !== undefined) updatePayload.requirements = Array.isArray(requirements) ? requirements : (typeof requirements === 'string' ? [requirements] : []);
+    if (salary !== undefined) updatePayload.salary = salary;
+
+    const { error } = await supabase.from('jobs').update(updatePayload).eq('id', id);
+    if (error) throw error;
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/admin/jobs/:id", authenticateAdmin, async (req: any, res) => {
+  const { id } = req.params;
+  try {
+    const { error } = await supabase.from('jobs').delete().eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/admin/settings", authenticateAdmin, (req, res) => {
+  res.json(systemSettings);
+});
+
+app.put("/api/admin/settings", authenticateAdmin, (req, res) => {
+  const { openaiApiKey, appName, logo, maintenanceMode } = req.body;
+  const updated = {
+    openaiApiKey: openaiApiKey !== undefined ? openaiApiKey : systemSettings.openaiApiKey,
+    appName: appName !== undefined ? appName : systemSettings.appName,
+    logo: logo !== undefined ? logo : systemSettings.logo,
+    maintenanceMode: maintenanceMode !== undefined ? maintenanceMode : systemSettings.maintenanceMode
+  };
+  saveSettings(updated);
+  res.json(updated);
+});
+
+async function ensureDefaultAdmin() {
+  try {
+    const email = "admin@smartcvai.com";
+    const { data: existing, error } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+    if (!existing) {
+      const userId = "admin-user-01";
+      const tenantId = "tenant-admin";
+      const passwordHash = bcrypt.hashSync("Admin123456", 10);
+      const virtualBio = serializeUserBio("super_admin", "active", "CEO & Chief Cloud Architect of SmartCV AI");
+      
+      const { error: insertErr } = await supabase.from('users').insert([{
+        id: userId,
+        email,
+        passwordHash,
+        name: "Default Super Admin",
+        tenantId,
+        title: "Super Admin",
+        bio: virtualBio,
+        createdAt: new Date().toISOString()
+      }]);
+      if (insertErr) {
+        console.error("❌ Failed to seed default admin inside Supabase:", insertErr.message);
+      } else {
+        console.log("✅ Seeded default admin user inside Supabase successfully!");
+      }
+    } else {
+      const userWithRole = extendUserWithVirtualFields(existing);
+      if (userWithRole.role !== "super_admin" || userWithRole.status !== "active") {
+        const virtualBio = serializeUserBio("super_admin", "active", userWithRole.bio || "SmartCV AI Admin");
+        await supabase.from('users').update({ bio: virtualBio }).eq('id', existing.id);
+        console.log("✅ Refreshed default admin user virtual fields.");
+      }
+    }
+
+    // Seed default jobs if none exist
+    const { count: jobCount } = await supabase.from('jobs').select('*', { count: 'exact', head: true });
+    if (!jobCount) {
+      console.log("💼 Seeding initial job board for production environment...");
+      const initialJobs = [
+        {
+          id: "job-p-1",
+          title: "Senior Full Stack Engineer (Remote)",
+          company: "Vercel",
+          location: "San Francisco, CA / Remote",
+          category: "SaaS Platform",
+          type: "Full-Time",
+          description: "We are looking for a Senior Full Stack Engineer to help build the future of deployment and developer experiences. You will work with React, Next.js, and Node.js.",
+          requirements: ["React", "TypeScript", "Next.js", "Node.js", "Tailwind CSS"],
+          salary: "$160k - $220k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-2",
+          title: "Senior Product Designer",
+          company: "OpenAI",
+          location: "San Francisco, CA",
+          category: "AI & Research",
+          type: "Full-Time",
+          description: "Design the interfaces that bridge the gap between human intelligence and AI capabilities. Focus on intuitive, accessible, and powerful user experiences.",
+          requirements: ["Figma", "Design Systems", "Prototyping", "UX Research"],
+          salary: "$180k - $250k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-3",
+          title: "Cloud Solutions Architect",
+          company: "AWS",
+          location: "Seattle, WA",
+          category: "Core Infrastructure",
+          type: "Full-Time",
+          description: "Help customers architect highly scalable, available, and resilient applications on AWS. Lead technical discussions and design reviews.",
+          requirements: ["AWS", "Cloud Architecture", "Terraform", "Security"],
+          salary: "$170k - $230k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-4",
+          title: "Backend Specialist (Node/Go)",
+          company: "Stripe",
+          location: "Dublin, Ireland",
+          category: "Fintech",
+          type: "Full-Time",
+          description: "Build the payment infrastructure for the internet. Scalability, reliability, and precision are our top priorities.",
+          requirements: ["Node.js", "Go", "PostgreSQL", "API Design"],
+          salary: "€120k - €160k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-5",
+          title: "Senior Frontend Engineer",
+          company: "Datadog",
+          location: "Paris, France / Remote",
+          category: "Monitoring",
+          type: "Full-Time",
+          description: "Create highly performant data visualizations and dashboards for massive scale monitoring data.",
+          requirements: ["React", "TypeScript", "D3.js", "Performance Optimization"],
+          salary: "€90k - €120k",
+          postedAt: new Date().toISOString()
+        }
+      ];
+      await supabase.from('jobs').insert(initialJobs);
+      console.log("✅ Seeded 5 initial job postings.");
+    }
+  } catch (err: any) {
+    console.error("⚠️ Error checking/seeding default admin account:", err.message);
+  }
+}
+
+// --- VITE MIDDLEWARE AND SPA STATIC ROUTER ---
+
+async function startServer() {
+  // Dynamic Dynamic initialization
+  await ensureDefaultAdmin();
+
+  if (process.env.NODE_ENV !== "production") {
+    // Development server integration
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    // Production static serving
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 SmartCV AI running at http://localhost:${PORT}`);
+    console.log(`Connected to Supabase PostgreSQL`);
+  });
+}
+
+startServer();

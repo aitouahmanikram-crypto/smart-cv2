@@ -1,0 +1,6 @@
+{
+  "name": "SmartCV AI",
+  "description": "An AI-powered SaaS platform that helps users analyze CVs, generate tailored cover letters, and match with ideal jobs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
