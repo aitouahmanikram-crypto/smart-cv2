@@ -2,13 +2,18 @@ export async function safeJson(response: Response) {
   const contentType = response.headers.get("content-type");
   if (!contentType || !contentType.includes("application/json")) {
     const text = await response.text();
-    return { error: text || "Expected JSON response but got something else", status: response.status };
+    // Nettoyer le HTML pour le message d'erreur
+    const cleanText = text.substring(0, 300).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return { 
+      error: `Erreur Serveur (${response.status}): Le serveur n'a pas renvoyé de JSON. Réponse: ${cleanText || 'Vide'}`, 
+      status: response.status 
+    };
   }
   
   try {
     return await response.json();
   } catch (err) {
-    return { error: "Failed to parse JSON response", status: response.status };
+    return { error: "Impossible de lire le JSON du serveur", status: response.status };
   }
 }
 

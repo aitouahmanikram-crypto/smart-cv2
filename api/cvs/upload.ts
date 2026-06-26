@@ -4,17 +4,17 @@ import { getAuthenticatedUser } from '../_lib/middleware.js';
 import { getSupabase } from '../_lib/db.js';
 import { logActivity } from '../_lib/utils.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
-import multer from 'multer';
-import mammoth from 'mammoth';
 
-// For ESM compatibility with CJS modules like pdf-parse
+// ESM compatibility for CJS modules
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
+const multer = require('multer');
 const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 }
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit for Vercel
 });
 
 const runMiddleware = (req: any, res: any, fn: any) => {
@@ -80,14 +80,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const fileName = file.originalname;
 
         console.log(`[CV Upload] Extracting text from ${file.mimetype}...`);
-        if (file.mimetype === "application/pdf") {
-            const pdfData = await pdfParse(file.buffer);
-            textContent = pdfData.text;
-        } else if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || fileName.endsWith(".docx")) {
-            const docResult = await mammoth.extractRawText({ buffer: file.buffer });
-            textContent = docResult.value;
-        } else {
-            textContent = file.buffer.toString("utf-8");
+        try {
+            if (file.mimetype === "application/pdf") {
+                const pdfData = await pdfParse(file.buffer);
+                textContent = pdfData.text;
+            } else if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || fileName.endsWith(".docx")) {
+                const docResult = await mammoth.extractRawText({ buffer: file.buffer });
+                textContent = docResult.value;
+            } else {
+                textContent = file.buffer.toString("utf-8");
+            }
+        } catch (extractErr: any) {
+            console.error('[CV Upload] Text extraction crash:', extractErr);
+            return res.status(400).json({ success: false, error: `Erreur d'extraction de texte: ${extractErr.message}` });
         }
 
         if (!textContent || textContent.trim().length < 50) {
