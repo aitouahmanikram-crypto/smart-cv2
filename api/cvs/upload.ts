@@ -5,8 +5,12 @@ import { getSupabase } from '../_lib/db.js';
 import { logActivity } from '../_lib/utils.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
 import multer from 'multer';
-import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
+
+// For ESM compatibility with CJS modules like pdf-parse
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
@@ -49,19 +53,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
+        console.log('[CV Upload] Starting upload process...');
         const user = await getAuthenticatedUser(req, res);
-        if (!user) return;
+        if (!user) {
+            console.warn('[CV Upload] Authentication failed');
+            return;
+        }
+        console.log(`[CV Upload] Authenticated user: ${user.email}`);
 
         const supabase = getSupabase();
-        if (!supabase) return res.status(500).json({ success: false, error: "Supabase configuration missing" });
+        if (!supabase) {
+            console.error('[CV Upload] Supabase configuration missing');
+            return res.status(500).json({ success: false, error: "Supabase configuration missing" });
+        }
 
+        console.log('[CV Upload] Processing multipart form data...');
         await runMiddleware(req, res, upload.single('cvFile'));
         const file = (req as any).file;
-        if (!file) return res.status(400).json({ success: false, error: "No file uploaded" });
+        if (!file) {
+            console.warn('[CV Upload] No file provided in request');
+            return res.status(400).json({ success: false, error: "No file uploaded" });
+        }
+        console.log(`[CV Upload] File received: ${file.originalname} (${file.size} bytes)`);
 
         let textContent = "";
         const fileName = file.originalname;
 
+        console.log(`[CV Upload] Extracting text from ${file.mimetype}...`);
         if (file.mimetype === "application/pdf") {
             const pdfData = await pdfParse(file.buffer);
             textContent = pdfData.text;
@@ -73,10 +91,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (!textContent || textContent.trim().length < 50) {
+            console.warn('[CV Upload] Text extraction failed or content too short');
             return res.status(400).json({ success: false, error: "Could not extract enough text from file." });
         }
+        console.log(`[CV Upload] Successfully extracted ${textContent.length} characters of text`);
 
+        console.log('[CV Upload] Calling AI service for analysis...');
         const openaiPayload = await parseCVTextAndGenerateSummary(textContent);
+        console.log('[CV Upload] AI analysis complete');
+        
         const score = openaiPayload.score || 72;
         const cvId = `cv-${Date.now()}`;
         const status = score >= 80 ? "VALIDATED" : (score >= 60 ? "ANALYSED" : "REJECTED");
@@ -92,10 +115,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             updatedAt: new Date().toISOString()
         };
 
+        console.log('[CV Upload] Saving to Supabase...');
         const { error: insertErr } = await supabase.from('cvs').insert([analyzedCV]);
-        if (insertErr) throw insertErr;
+        if (insertErr) {
+            console.error('[CV Upload] Supabase insert error:', insertErr);
+            throw insertErr;
+        }
+        
+        console.log('[CV Upload] Logging activity...');
         await logActivity(user.id, user.tenantId, "analysis", `CV "${fileName}" analyzed.`);
         
+        console.log('[CV Upload] Upload process finished successfully');
         return res.status(200).json({ success: true, data: analyzedCV });
     } catch (err: any) {
         console.error('[CV Upload Error]:', err);
