@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getSupabase } from './_lib/db';
-import { runCors } from './_lib/cors';
-import { getAuthenticatedUser } from './_lib/middleware';
-import { analyzeJobMatch, generateCareerAdvice, generateCoverLetter, rewriteCVContent } from '../src/services/aiService';
-import { logActivity } from './_lib/utils';
+import { getSupabase } from './_lib/db.js';
+import { runCors } from './_lib/cors.js';
+import { getAuthenticatedUser } from './_lib/middleware.js';
+import { analyzeJobMatch, generateCareerAdvice, generateCoverLetter, rewriteCVContent } from '../src/services/aiService.js';
+import { logActivity } from './_lib/utils.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') {

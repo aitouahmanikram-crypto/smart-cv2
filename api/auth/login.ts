@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import bcrypt from 'bcryptjs';
-import { getSupabase } from '../_lib/db';
-import { generateToken } from '../_lib/auth';
-import { runCors } from '../_lib/cors';
+import { getSupabase } from '../_lib/db.js';
+import { generateToken } from '../_lib/auth.js';
+import { runCors } from '../_lib/cors.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') {

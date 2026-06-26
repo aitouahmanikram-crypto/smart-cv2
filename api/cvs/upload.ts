@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { runCors } from '../_lib/cors';
-import { getAuthenticatedUser } from '../_lib/middleware';
-import { getSupabase } from '../_lib/db';
-import { logActivity } from '../_lib/utils';
-import { parseCVTextAndGenerateSummary } from '../../src/services/aiService';
+import { runCors } from '../_lib/cors.js';
+import { getAuthenticatedUser } from '../_lib/middleware.js';
+import { getSupabase } from '../_lib/db.js';
+import { logActivity } from '../_lib/utils.js';
+import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
 import multer from 'multer';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';

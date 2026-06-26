@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { verifyToken } from './auth';
-import { getSupabase } from './db';
-import { extendUserWithVirtualFields } from './utils';
+import { verifyToken } from './auth.js';
+import { getSupabase } from './db.js';
+import { extendUserWithVirtualFields } from './utils.js';
 
 export async function getAuthenticatedUser(req: VercelRequest, res: VercelResponse) {
   const supabase = getSupabase();

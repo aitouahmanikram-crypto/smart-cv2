@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getSupabase } from './_lib/db';
-import { runCors } from './_lib/cors';
-import { getAuthenticatedAdmin } from './_lib/middleware';
+import { getSupabase } from './_lib/db.js';
+import { runCors } from './_lib/cors.js';
+import { getAuthenticatedAdmin } from './_lib/middleware.js';
 import fs from 'fs';
 import bcrypt from 'bcryptjs';
 

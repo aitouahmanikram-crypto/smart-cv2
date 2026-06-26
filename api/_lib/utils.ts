@@ -1,4 +1,4 @@
-import { getSupabase } from './db';
+import { getSupabase } from './db.js';
 
 // Multi-tenant activity logger
 export async function logActivity(userId: string, tenantId: string, type: 'upload' | 'analysis' | 'letter' | 'match' | 'chat' | 'auth' | 'admin', message: string) {
