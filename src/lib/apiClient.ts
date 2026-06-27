@@ -23,6 +23,9 @@ export async function safeJson(response: Response) {
   }
 }
 
+// Local storage simulation for AI Studio preview
+let mockCVs: any[] = [];
+
 export async function apiFetch(url: string, options: RequestInit = {}) {
   let finalUrl = url;
   // Mappings to Serverless Functions
@@ -101,6 +104,21 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
   }
 
   console.log(`[apiFetch] Request: ${options.method || 'GET'} ${url} -> ${finalUrl}`, { body: !!options.body });
+
+  // Detection of AI Studio / Preview mode to skip backend for problematic features like upload
+  const isPreview = import.meta.env.DEV || 
+                    window.location.hostname.includes("aistudio") || 
+                    window.location.hostname.includes("ais-dev") || 
+                    window.location.hostname.includes("europe-west3.run.app");
+
+  if (isPreview && url.includes('/api/cvs/upload')) {
+    console.log("AI Studio preview detected: using mock CV analysis, backend upload skipped");
+    const mockData = getMockData(url, options) as any;
+    if (mockData.success) {
+      mockCVs.unshift(mockData.data);
+    }
+    return mockData;
+  }
 
   try {
     const response = await fetch(finalUrl, options);
@@ -181,14 +199,40 @@ function getMockData(url: string, options: RequestInit) {
 
   // CV Upload Mock
   if (url.includes('/api/cvs/upload')) {
+    const now = new Date().toISOString();
     return {
       success: true,
       data: {
         id: 'mock-cv-' + Date.now(),
-        fullName: "Candidat Simulé",
-        skills: ["React", "TypeScript", "Node.js", "AI"],
+        candidateName: "Ikram Ait Ouahman",
+        fullName: "Ikram Ait Ouahman",
+        fileName: "resume.pdf",
+        updatedAt: now,
+        createdAt: now,
+        score: 82,
+        atsScore: 82,
+        skills: ["React", "Node.js", "Supabase", "AI", "CV Analysis"],
+        experience: "Junior AI / Full Stack profile",
         experienceYears: 3,
-        summary: "Analyse simulée réussie dans l'environnement de développement AI Studio.",
+        summary: "Profil Junior AI / Full Stack avec de solides bases en React et Node.js. Analyse simulée réussie dans l'environnement AI Studio.",
+        parsedDetails: {
+          name: "Ikram Ait Ouahman",
+          keywordMatching: 82,
+          formattingQuality: 88,
+          skillsCoverage: 75,
+          experienceRelevance: 80,
+          educationRelevance: 90
+        },
+        strengths: ["Maîtrise de React", "Capacité d'analyse"],
+        weaknesses: ["Expérience limitée en backend"],
+        skillsMatched: ["React", "Node.js", "AI"],
+        skillsMissing: ["PostgreSQL", "CI/CD"],
+        atsOptimizations: ["Détailler davantage les projets React"],
+        recommendations: [
+          "Ajouter des réalisations mesurables",
+          "Améliorer les mots-clés pour les systèmes ATS",
+          "Ajouter plus de détails sur les projets techniques"
+        ],
         isMock: true
       }
     };
@@ -210,7 +254,38 @@ function getMockData(url: string, options: RequestInit) {
   }
 
   // Lists
-  if (url.includes('/api/cvs') || url.includes('/api/jobs') || url.includes('/api/matches') || url.includes('/api/history') || url.includes('/api/career-advice')) {
+  if (url.includes('/api/cvs')) {
+    if (mockCVs.length === 0) {
+      // Return at least one default mock if list is empty in dev
+      return [{
+        id: 'mock-cv-default',
+        candidateName: "Ikram Ait Ouahman",
+        fullName: "Ikram Ait Ouahman",
+        fileName: "resume_initial.pdf",
+        updatedAt: new Date().toISOString(),
+        score: 85,
+        summary: "Analyse initiale du profil.",
+        parsedDetails: {
+          name: "Ikram Ait Ouahman",
+          keywordMatching: 85,
+          formattingQuality: 90,
+          skillsCoverage: 80,
+          experienceRelevance: 85,
+          educationRelevance: 95
+        },
+        strengths: ["Compétences techniques solides", "Formation académique"],
+        weaknesses: ["Manque d'expérience en production"],
+        skillsMatched: ["React", "TypeScript"],
+        skillsMissing: ["Docker", "Kubernetes"],
+        atsOptimizations: ["Ajouter plus de mots-clés techniques"],
+        recommendations: ["Continuer à construire des projets personnels"],
+        isMock: true
+      }];
+    }
+    return mockCVs;
+  }
+
+  if (url.includes('/api/jobs') || url.includes('/api/matches') || url.includes('/api/history') || url.includes('/api/career-advice')) {
     return [];
   }
 
