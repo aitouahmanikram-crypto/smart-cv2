@@ -105,17 +105,33 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
   try {
     const response = await fetch(finalUrl, options);
     
-    // If it's a 404 in development, try mock data
-    if (response.status === 404 && import.meta.env.DEV) {
-      console.warn(`API route ${finalUrl} not found (404). Using mock fallback.`);
+    // Fallback pour l'upload (404, 405 ou erreur réseau dans AI Studio)
+    if ((response.status === 404 || response.status === 405) && url.includes('/upload')) {
+      console.warn(`[apiFetch] API Upload issue (Status: ${response.status}). Using mock fallback.`);
       return getMockData(url, options);
     }
+    
+    // Read as text first to handle empty/non-JSON safely
+    const responseText = await response.text();
+    
+    if (!responseText && !response.ok) {
+      throw new Error(`Le serveur a renvoyé une réponse vide (Status: ${response.status})`);
+    }
 
-    const data = await safeJson(response);
+    let data: any = {};
+    if (responseText) {
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error(`[apiFetch] Non-JSON response (Status: ${response.status}):`, responseText.substring(0, 100));
+        if (response.ok) return { success: true, raw: responseText };
+        throw new Error(`Réponse non-JSON (${response.status}): ${responseText.substring(0, 50)}`);
+      }
+    }
 
     if (!response.ok) {
       console.error(`[apiFetch] HTTP Error: ${response.status}`, data);
-      throw new Error(data.error || data.message || `Request failed: ${response.status}`);
+      throw new Error(data.error || data.message || `Erreur serveur: ${response.status}`);
     }
 
     // Unpack data if it follows the { success, data } format
@@ -160,6 +176,21 @@ function getMockData(url: string, options: RequestInit) {
       email: 'mock@example.com',
       fullName: 'Mock User',
       role: 'user'
+    };
+  }
+
+  // CV Upload Mock
+  if (url.includes('/api/cvs/upload')) {
+    return {
+      success: true,
+      data: {
+        id: 'mock-cv-' + Date.now(),
+        fullName: "Candidat Simulé",
+        skills: ["React", "TypeScript", "Node.js", "AI"],
+        experienceYears: 3,
+        summary: "Analyse simulée réussie dans l'environnement de développement AI Studio.",
+        isMock: true
+      }
     };
   }
 

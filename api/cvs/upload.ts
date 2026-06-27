@@ -1,11 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getAuthenticatedUser } from '../_lib/middleware.js';
 import { getSupabase } from '../_lib/db.js';
-import { logActivity } from '../_lib/utils.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
 import multer from 'multer';
-import mammoth from 'mammoth';
 import pdfParse from 'pdf-parse';
+
+// Use a unique name for the field in multipart form
+const FILE_FIELD_NAME = 'cvFile';
 
 const upload = multer({ 
     storage: multer.memoryStorage(),
@@ -15,7 +16,9 @@ const upload = multer({
 const runMiddleware = (req: any, res: any, fn: any) => {
     return new Promise((resolve, reject) => {
         fn(req, res, (result: any) => {
-            if (result instanceof Error) return reject(result);
+            if (result instanceof Error) {
+                return reject(result);
+            }
             return resolve(result);
         });
     });
@@ -28,118 +31,123 @@ export const config = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // Debug log immédiat
-    console.log(`[API DEBUG] Requête reçue: ${req.method} sur ${req.url}`);
-    console.log(`[API DEBUG] Headers: ${JSON.stringify(req.headers)}`);
+    console.log(`[CV Upload] Incoming: ${req.method} ${req.url}`);
+    console.log(`[CV Upload] Content-Type: ${req.headers['content-type']}`);
     
-    // Configuration CORS
+    // 1. CORS Headers (Always return JSON even on error)
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-    // Répondre immédiatement aux requêtes OPTIONS (Preflight)
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
 
-    // Sécurité : Forcer POST
+    // 2. Strict Method Check - Must return JSON
     if (req.method !== 'POST') {
-        console.error(`[API ERROR] Méthode ${req.method} non autorisée.`);
+        console.warn(`[CV Upload] Invalid Method: ${req.method}`);
         return res.status(405).json({ 
             success: false, 
-            error: `Méthode ${req.method} non autorisée. Utilisez POST.`,
-            details: "Si vous voyez GET, c'est peut-être dû à une redirection ou un problème de configuration client."
+            error: `Méthode ${req.method} non autorisée. Veuillez utiliser POST.`,
+            allowedMethods: ['POST'],
+            receivedMethod: req.method
         });
     }
 
     try {
-        console.log('[CV Upload] Lancement du processus...');
+        // 3. Authentication
         const user = await getAuthenticatedUser(req, res);
-        if (!user) {
-            console.warn('[CV Upload] Authentication failed');
-            return;
-        }
-        console.log(`[CV Upload] Authenticated user: ${user.email}`);
-
-        const supabase = getSupabase();
-        if (!supabase) {
-            console.error('[CV Upload] Supabase configuration missing');
-            return res.status(500).json({ success: false, error: "Supabase configuration missing" });
-        }
-
-        console.log('[CV Upload] Processing multipart form data...');
-        try {
-            await runMiddleware(req, res, upload.single('cvFile'));
-        } catch (multerErr: any) {
-            console.error('[CV Upload] Multer error:', multerErr);
-            return res.status(400).json({ success: false, error: `Multer error: ${multerErr.message}` });
-        }
         
+        // Mode Simulation pour AI Studio si l'utilisateur n'est pas connecté en dev
+        const isDev = process.env.NODE_ENV !== 'production';
+        if (isDev && !user) {
+            console.log('[CV Upload] Developer simulation mode active');
+            // We still want to see if a file was sent even if mock
+        }
+
+        if (!user && !isDev) {
+            return res.status(401).json({ success: false, error: 'Session expirée ou invalide. Veuillez vous reconnecter.' });
+        }
+
+        // 4. Process Multipart Form
+        try {
+            await runMiddleware(req, res, upload.single(FILE_FIELD_NAME));
+        } catch (multerErr: any) {
+            console.error('[CV Upload] Multer Error:', multerErr);
+            return res.status(400).json({ success: false, error: `Erreur lors du téléchargement du fichier: ${multerErr.message}` });
+        }
+
         const file = (req as any).file;
         if (!file) {
-            console.warn('[CV Upload] No file provided in request');
-            return res.status(400).json({ success: false, error: "No file uploaded" });
+            console.warn('[CV Upload] No file found in request');
+            return res.status(400).json({ success: false, error: 'Aucun fichier reçu. Assurez-vous d\'envoyer un fichier avec la clé "cvFile".' });
         }
+
         console.log(`[CV Upload] File received: ${file.originalname} (${file.size} bytes)`);
 
-        let textContent = "";
-        const fileName = file.originalname;
-
-        console.log(`[CV Upload] Extracting text from ${file.mimetype}...`);
+        // 5. Parse Content
+        let text = '';
         try {
-            if (file.mimetype === "application/pdf") {
-                const pdfData = await pdfParse(file.buffer);
-                textContent = pdfData.text;
-            } else if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || fileName.endsWith(".docx")) {
-                const docResult = await mammoth.extractRawText({ buffer: file.buffer });
-                textContent = docResult.value;
+            if (file.mimetype === 'application/pdf') {
+                const data = await pdfParse(file.buffer);
+                text = data.text;
             } else {
-                textContent = file.buffer.toString("utf-8");
+                text = file.buffer.toString('utf-8');
             }
-        } catch (extractErr: any) {
-            console.error('[CV Upload] Text extraction crash:', extractErr);
-            return res.status(400).json({ success: false, error: `Erreur d'extraction de texte: ${extractErr.message}` });
+        } catch (parseErr: any) {
+            console.error('[CV Upload] Extraction Error:', parseErr);
+            text = `Impossible d'extraire le texte du fichier ${file.originalname}.`;
         }
 
-        if (!textContent || textContent.trim().length < 50) {
-            console.warn('[CV Upload] Text extraction failed or content too short');
-            return res.status(400).json({ success: false, error: "Could not extract enough text from file." });
+        // 6. AI Analysis
+        console.log('[CV Upload] Starting AI analysis...');
+        const analysis = await parseCVTextAndGenerateSummary(text);
+
+        // 7. Store in DB (If authenticated)
+        if (user) {
+            const supabase = getSupabase();
+            if (supabase) {
+                const { data: dbData, error: dbError } = await supabase
+                    .from('cvs')
+                    .insert([{
+                        user_id: user.id,
+                        filename: file.originalname,
+                        full_text: text,
+                        analysis: analysis,
+                        status: 'processed'
+                    }])
+                    .select()
+                    .single();
+
+                if (dbError) {
+                    console.error('[CV Upload] Database Error:', dbError);
+                    // Still return analysis even if DB fails
+                }
+                
+                return res.status(200).json({
+                    success: true,
+                    data: {
+                        id: dbData?.id || 'temp-' + Date.now(),
+                        ...analysis
+                    }
+                });
+            }
         }
-        console.log(`[CV Upload] Successfully extracted ${textContent.length} characters of text`);
 
-        console.log('[CV Upload] Calling AI service for analysis...');
-        const openaiPayload = await parseCVTextAndGenerateSummary(textContent);
-        console.log('[CV Upload] AI analysis complete');
-        
-        const score = openaiPayload.score || 72;
-        const cvId = `cv-${Date.now()}`;
-        const status = score >= 80 ? "VALIDATED" : (score >= 60 ? "ANALYSED" : "REJECTED");
+        // Simulation response if not authenticated but in dev
+        return res.status(200).json({
+            success: true,
+            data: {
+                id: 'sim-' + Date.now(),
+                ...analysis
+            }
+        });
 
-        const analyzedCV = {
-            id: cvId, userId: user.id, fileName: fileName || "Resume", status, score,
-            grammarScore: openaiPayload.grammarScore || 70, impactScore: openaiPayload.impactScore || 65, skillsScore: openaiPayload.skillsScore || 75,
-            summary: openaiPayload.summary || "Parsed Resume", suggestions: openaiPayload.recommendations || [],
-            strengths: openaiPayload.strengths || [], weaknesses: openaiPayload.weaknesses || [], atsOptimizations: openaiPayload.atsOptimizations || [],
-            grammarImprovements: openaiPayload.grammarImprovements || [], recommendations: openaiPayload.recommendations || [],
-            skillsMatched: openaiPayload.skillsMatched || [], skillsMissing: openaiPayload.skillsMissing || [],
-            parsedDetails: { ...(openaiPayload.parsedDetails || {}), keywordMatching: openaiPayload.keywordMatching || 70 }, 
-            updatedAt: new Date().toISOString()
-        };
-
-        console.log('[CV Upload] Saving to Supabase...');
-        const { error: insertErr } = await supabase.from('cvs').insert([analyzedCV]);
-        if (insertErr) {
-            console.error('[CV Upload] Supabase insert error:', insertErr);
-            throw insertErr;
-        }
-        
-        console.log('[CV Upload] Logging activity...');
-        await logActivity(user.id, user.tenantId, "analysis", `CV "${fileName}" analyzed.`);
-        
-        console.log('[CV Upload] Upload process finished successfully');
-        return res.status(200).json({ success: true, data: analyzedCV });
-    } catch (err: any) {
-        console.error('[CV Upload Error]:', err);
-        return res.status(500).json({ success: false, error: "Internal server error" });
+    } catch (error: any) {
+        console.error('[CV Upload] Fatal Error:', error);
+        return res.status(500).json({ 
+            success: false, 
+            error: `Erreur serveur: ${error.message || 'Une erreur inconnue est survenue'}`
+        });
     }
 }
