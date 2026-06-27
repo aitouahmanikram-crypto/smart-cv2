@@ -4,6 +4,7 @@ import { getSupabase } from '../_lib/db.js';
 import { parseCVTextAndGenerateSummary } from '../../src/services/aiService.js';
 import multer from 'multer';
 import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
 
 // Use a unique name for the field in multipart form
 const FILE_FIELD_NAME = 'cvFile';
@@ -66,7 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (!user && !isDev) {
-            return res.status(401).json({ success: false, error: 'Session expirée ou invalide. Veuillez vous reconnecter.' });
+            return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
         }
 
         // 4. Process Multipart Form
@@ -74,13 +75,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             await runMiddleware(req, res, upload.single(FILE_FIELD_NAME));
         } catch (multerErr: any) {
             console.error('[CV Upload] Multer Error:', multerErr);
-            return res.status(400).json({ success: false, error: `Erreur lors du téléchargement du fichier: ${multerErr.message}` });
+            return res.status(400).json({ success: false, error: `Upload error: ${multerErr.message}` });
         }
 
         const file = (req as any).file;
         if (!file) {
             console.warn('[CV Upload] No file found in request');
-            return res.status(400).json({ success: false, error: 'Aucun fichier reçu. Assurez-vous d\'envoyer un fichier avec la clé "cvFile".' });
+            return res.status(400).json({ success: false, error: 'No file received. Field name must be "cvFile".' });
         }
 
         console.log(`[CV Upload] File received: ${file.originalname} (${file.size} bytes)`);
@@ -88,15 +89,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // 5. Parse Content
         let text = '';
         try {
-            if (file.mimetype === 'application/pdf') {
+            const mimetype = file.mimetype || '';
+            const originalName = file.originalname || 'unknown.file';
+            
+            console.log(`[CV Upload] Parsing file: ${originalName} (Mime: ${mimetype})`);
+
+            if (mimetype === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf')) {
                 const data = await pdfParse(file.buffer);
                 text = data.text;
+            } else if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || originalName.toLowerCase().endsWith('.docx')) {
+                const result = await mammoth.extractRawText({ buffer: file.buffer });
+                text = result.value;
             } else {
                 text = file.buffer.toString('utf-8');
             }
+            
+            if (!text || text.trim().length === 0) {
+                throw new Error('Extraction resulted in empty text');
+            }
         } catch (parseErr: any) {
             console.error('[CV Upload] Extraction Error:', parseErr);
-            text = `Impossible d'extraire le texte du fichier ${file.originalname}.`;
+            return res.status(422).json({ 
+                success: false, 
+                error: `Could not extract readable text from this file. Please ensure it is a valid PDF, DOCX or TXT file. (${parseErr.message})` 
+            });
         }
 
         // 6. AI Analysis
@@ -107,27 +123,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (user) {
             const supabase = getSupabase();
             if (supabase) {
+                const now = new Date().toISOString();
                 const { data: dbData, error: dbError } = await supabase
                     .from('cvs')
                     .insert([{
-                        user_id: user.id,
-                        filename: file.originalname,
-                        full_text: text,
-                        analysis: analysis,
-                        status: 'processed'
+                        userId: user.id,
+                        fileName: file.originalname,
+                        fullText: text,
+                        summary: analysis.summary,
+                        score: analysis.score,
+                        parsedDetails: analysis.parsedDetails,
+                        strengths: analysis.strengths,
+                        weaknesses: analysis.weaknesses,
+                        recommendations: analysis.recommendations,
+                        skills: analysis.skills,
+                        status: 'processed',
+                        updatedAt: now,
+                        createdAt: now
                     }])
                     .select()
                     .single();
 
                 if (dbError) {
                     console.error('[CV Upload] Database Error:', dbError);
-                    // Still return analysis even if DB fails
+                    // Continue anyway, analysis is the primary goal
                 }
                 
                 return res.status(200).json({
                     success: true,
                     data: {
                         id: dbData?.id || 'temp-' + Date.now(),
+                        fileName: file.originalname,
+                        updatedAt: now,
                         ...analysis
                     }
                 });

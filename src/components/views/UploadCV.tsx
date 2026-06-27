@@ -53,6 +53,9 @@ export default function UploadCV({ token, onNavigate }: { token: string, onNavig
       const formData = new FormData();
       formData.append("cvFile", file);
       
+      console.log("[UploadCV] Sending real file to backend...");
+      
+      // Real upload to production-ready endpoint
       await apiFetch("/api/cvs/upload", {
         method: "POST",
         headers: {

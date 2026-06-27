@@ -1,3 +1,5 @@
+const MOCK_MODE = import.meta.env.VITE_MOCK_MODE === "true";
+
 export async function safeJson(response: Response) {
   const contentType = response.headers.get("content-type");
   if (!contentType || !contentType.includes("application/json")) {
@@ -7,10 +9,10 @@ export async function safeJson(response: Response) {
       textSample: text.substring(0, 200) 
     });
     
-    // Nettoyer le HTML pour le message d'erreur
+    // Clean text for error message
     const cleanText = text.substring(0, 300).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
     return { 
-      error: `Erreur Serveur (${response.status}): Le serveur n'a pas renvoyé de JSON. Réponse: ${cleanText || 'Vide'}`, 
+      error: `Server Error (${response.status}): The server did not return JSON. Response: ${cleanText || 'Empty'}`, 
       status: response.status,
       rawResponse: text
     };
@@ -19,23 +21,38 @@ export async function safeJson(response: Response) {
   try {
     return await response.json();
   } catch (err) {
-    return { error: "Impossible de lire le JSON du serveur", status: response.status };
+    return { error: "Failed to parse server JSON", status: response.status };
   }
 }
 
-// Local storage simulation for AI Studio preview
+// Local storage simulation for development ONLY
 let mockCVs: any[] = [];
 
 export async function apiFetch(url: string, options: RequestInit = {}) {
+  // Only intercept for mock mode if explicitly enabled via environment variable
+  if (MOCK_MODE) {
+    console.log(`[apiFetch] MOCK MODE ACTIVE: Intercepting ${url}`);
+    const mockData = getMockData(url, options) as any;
+    
+    // Simulate delay
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    if (mockData && typeof mockData === 'object' && 'success' in mockData) {
+       return mockData.data !== undefined ? mockData.data : mockData;
+    }
+    return mockData;
+  }
+
   let finalUrl = url;
-  // Mappings to Serverless Functions
+  
+  // Mappings to Serverless Functions (Vercel style)
   if (url === '/api/auth/login') finalUrl = '/api/auth/login';
   else if (url === '/api/auth/register') finalUrl = '/api/auth/register';
   else if (url === '/api/auth/me') finalUrl = '/api/auth/me';
   else if (url === '/api/auth/logout') finalUrl = '/api/auth/logout';
   else if (url === '/api/dashboard/stats') finalUrl = '/api/dashboard/stats';
-  else if (url === '/api/profile/update') finalUrl = '/api/profile/update';
   else if (url === '/api/cvs/upload') finalUrl = '/api/cvs/upload';
+  else if (url === '/api/cvs/upload-test') finalUrl = '/api/cvs/upload-test';
   else if (url === '/api/cvs') finalUrl = '/api/cvs/index';
   else if (url === '/api/jobs') finalUrl = '/api/jobs/index';
   else if (url === '/api/jobs/create') finalUrl = '/api/jobs/create';
@@ -105,35 +122,14 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
 
   console.log(`[apiFetch] Request: ${options.method || 'GET'} ${url} -> ${finalUrl}`, { body: !!options.body });
 
-  // Detection of AI Studio / Preview mode to skip backend for problematic features like upload
-  const isPreview = import.meta.env.DEV || 
-                    window.location.hostname.includes("aistudio") || 
-                    window.location.hostname.includes("ais-dev") || 
-                    window.location.hostname.includes("europe-west3.run.app");
-
-  if (isPreview && url.includes('/api/cvs/upload')) {
-    console.log("AI Studio preview detected: using mock CV analysis, backend upload skipped");
-    const mockData = getMockData(url, options) as any;
-    if (mockData.success) {
-      mockCVs.unshift(mockData.data);
-    }
-    return mockData;
-  }
-
   try {
     const response = await fetch(finalUrl, options);
-    
-    // Fallback pour l'upload (404, 405 ou erreur réseau dans AI Studio)
-    if ((response.status === 404 || response.status === 405) && url.includes('/upload')) {
-      console.warn(`[apiFetch] API Upload issue (Status: ${response.status}). Using mock fallback.`);
-      return getMockData(url, options);
-    }
     
     // Read as text first to handle empty/non-JSON safely
     const responseText = await response.text();
     
     if (!responseText && !response.ok) {
-      throw new Error(`Le serveur a renvoyé une réponse vide (Status: ${response.status})`);
+      throw new Error(`Server returned empty response (Status: ${response.status})`);
     }
 
     let data: any = {};
@@ -143,13 +139,13 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
       } catch (e) {
         console.error(`[apiFetch] Non-JSON response (Status: ${response.status}):`, responseText.substring(0, 100));
         if (response.ok) return { success: true, raw: responseText };
-        throw new Error(`Réponse non-JSON (${response.status}): ${responseText.substring(0, 50)}`);
+        throw new Error(`Non-JSON response (${response.status}): ${responseText.substring(0, 50)}`);
       }
     }
 
     if (!response.ok) {
       console.error(`[apiFetch] HTTP Error: ${response.status}`, data);
-      throw new Error(data.error || data.message || `Erreur serveur: ${response.status}`);
+      throw new Error(data.error || data.message || `Server error: ${response.status}`);
     }
 
     // Unpack data if it follows the { success, data } format
@@ -163,11 +159,7 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
 
     return data;
   } catch (error: any) {
-    // If network error in dev, also try mock data
-    if (import.meta.env.DEV) {
-      console.warn(`Network error for ${finalUrl}. Using mock fallback.`, error);
-      return getMockData(url, options);
-    }
+    console.error(`[apiFetch] Error for ${finalUrl}:`, error);
     throw error;
   }
 }

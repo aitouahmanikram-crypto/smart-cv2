@@ -31,32 +31,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!user) return;
 
     const [
-      { count: cvCount },
-      { count: matchCount },
-      { count: interviewCount }
+      { data: cvs },
+      { data: matches },
+      { data: letters },
+      { data: recentActivity }
     ] = await Promise.all([
-      supabase.from('cvs').select('*', { count: 'exact', head: true }).eq('userId', user.id),
-      supabase.from('matches').select('*', { count: 'exact', head: true }).eq('userId', user.id),
-      supabase.from('activities').select('*', { count: 'exact', head: true }).eq('userId', user.id).eq('type', 'interview')
+      supabase.from('cvs').select('*').eq('userId', user.id).order('updatedAt', { ascending: false }),
+      supabase.from('matches').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
+      supabase.from('letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
+      supabase.from('activities').select('*').eq('userId', user.id).order('timestamp', { ascending: false }).limit(10)
     ]);
-
-    const { data: recentActivity } = await supabase
-      .from('activities')
-      .select('*')
-      .eq('userId', user.id)
-      .order('timestamp', { ascending: false })
-      .limit(5);
 
     return res.status(200).json({
       success: true,
       data: {
-        stats: {
-          cvs: cvCount || 0,
-          matches: matchCount || 0,
-          interviews: interviewCount || 0,
-          score: 85 // Mock or calculate
-        },
-        recentActivity: recentActivity || []
+        cvs: cvs || [],
+        matches: matches || [],
+        letters: letters || [],
+        cvsCount: cvs?.length || 0,
+        matchesCount: matches?.length || 0,
+        lettersCount: letters?.length || 0,
+        recentActivity: recentActivity || [],
+        averageScore: cvs?.length ? Math.round(cvs.reduce((acc, c) => acc + (c.score || 0), 0) / cvs.length) : 0
       }
     });
   } catch (err: any) {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 
 // Import handlers
+import healthHandler from './api/health.js';
 import loginHandler from './api/auth/login.js';
 import registerHandler from './api/auth/register.js';
 import meHandler from './api/auth/me.js';
@@ -14,6 +15,7 @@ import profileUpdateHandler from './api/profile/update.js';
 import jobsIndexHandler from './api/jobs/index.js';
 import jobsCreateHandler from './api/jobs/create.js';
 import cvsUploadHandler from './api/cvs/upload.js';
+import cvsUploadTestHandler from './api/cvs/upload-test.js';
 import cvsIndexHandler from './api/cvs/index.js';
 import adminHandler from './api/admin.js';
 import actionsHandler from './api/actions.js';
@@ -58,6 +60,7 @@ async function startServer() {
   };
 
   // API Routes
+  app.all('/api/health', vercelToExpress(healthHandler, 'health'));
   app.all('/api/auth/login', vercelToExpress(loginHandler, 'login'));
   app.all('/api/auth/register', vercelToExpress(registerHandler, 'register'));
   app.all('/api/auth/me', vercelToExpress(meHandler, 'me'));
@@ -67,6 +70,7 @@ async function startServer() {
   app.all('/api/jobs/index', vercelToExpress(jobsIndexHandler, 'jobs-index'));
   app.all('/api/jobs/create', vercelToExpress(jobsCreateHandler, 'jobs-create'));
   app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
+  app.all('/api/cvs/upload-test', vercelToExpress(cvsUploadTestHandler, 'cv-upload-test'));
   app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
