@@ -69,9 +69,8 @@ async function startServer() {
   app.all('/api/profile/update', vercelToExpress(profileUpdateHandler, 'update-profile'));
   app.all('/api/jobs/index', vercelToExpress(jobsIndexHandler, 'jobs-index'));
   app.all('/api/jobs/create', vercelToExpress(jobsCreateHandler, 'jobs-create'));
-  // Standalone Vercel functions handle these in production
-  // app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
-  // app.all('/api/cvs/upload-test', vercelToExpress(cvsUploadTestHandler, 'cv-upload-test'));
+  app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
+  app.all('/api/cvs/upload-test', vercelToExpress(cvsUploadTestHandler, 'cv-upload-test'));
   app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
