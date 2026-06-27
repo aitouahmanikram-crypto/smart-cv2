@@ -159,6 +159,32 @@ export default function UploadCV({ token, onNavigate }: { token: string, onNavig
                 </>
               )}
             </button>
+
+            <button
+              onClick={async () => {
+                if (!file) return;
+                setIsUploading(true);
+                setError("");
+                try {
+                  const formData = new FormData();
+                  formData.append("cvFile", file);
+                  const testData = await apiFetch("/api/cvs/upload-test", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${token}` },
+                    body: formData
+                  });
+                  console.log("[Upload Test Success]:", testData);
+                  alert(`Test Success!\nFile: ${testData.fileName}\nSize: ${testData.fileSize} bytes\n\nPreview:\n${testData.extractedTextPreview}`);
+                } catch (err: any) {
+                  setError("Test Failed: " + err.message);
+                } finally {
+                  setIsUploading(false);
+                }
+              }}
+              className="w-full py-2.5 rounded-xl border border-slate-700 text-slate-400 text-xs font-mono hover:bg-slate-800 transition-colors mt-2"
+            >
+              DEBUG: RUN REAL PARSING TEST (NO DATABASE)
+            </button>
             
             {isUploading && (
               <p className="text-center text-xs text-slate-500 font-mono mt-4 animate-pulse">

@@ -1,82 +1,79 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import multer from 'multer';
+import formidable from 'formidable';
+import fs from 'fs';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 
-const upload = multer({ 
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 }
-});
-
-const runMiddleware = (req: any, res: any, fn: any) => {
-    return new Promise((resolve, reject) => {
-        fn(req, res, (result: any) => {
-            if (result instanceof Error) {
-                return reject(result);
-            }
-            return resolve(result);
-        });
-    });
+export const config = {
+  api: {
+    bodyParser: false,
+  },
 };
 
-export const config = {
-    api: {
-        bodyParser: false,
-    },
+const parseForm = (req: any): Promise<{ fields: any, files: any }> => {
+  const form = formidable({ multiples: false });
+  return new Promise((resolve, reject) => {
+    form.parse(req, (err, fields, files) => {
+      if (err) reject(err);
+      resolve({ fields, files });
+    });
+  });
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    console.log(`[Upload Test] Received ${req.method} request`);
-    
-    if (req.method !== 'POST') {
-        return res.status(405).json({ 
-            success: false, 
-            error: 'Method not allowed. Use POST.',
-            received: req.method
-        });
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({
+      success: false,
+      error: "Method not allowed",
+      receivedMethod: req.method
+    });
+  }
+
+  try {
+    const { files } = await parseForm(req);
+    const cvFile = Array.isArray(files.cvFile) ? files.cvFile[0] : files.cvFile;
+
+    if (!cvFile) {
+      return res.status(400).json({ success: false, error: 'No file received' });
     }
 
-    try {
-        await runMiddleware(req, res, upload.single('cvFile'));
-        
-        const file = (req as any).file;
-        if (!file) {
-            return res.status(400).json({ success: false, error: 'No file received' });
-        }
+    const buffer = fs.readFileSync(cvFile.filepath);
+    const originalName = cvFile.originalFilename || 'unknown.file';
+    const mimetype = cvFile.mimetype || '';
 
-        let text = '';
-        const mimetype = file.mimetype || '';
-        const originalName = file.originalname || 'unknown.file';
-        
-        console.log(`[Upload Test] Parsing file: ${originalName} (Mime: ${mimetype})`);
-
-        if (mimetype === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf')) {
-            const data = await pdfParse(file.buffer);
-            text = data.text;
-        } else if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || originalName.toLowerCase().endsWith('.docx')) {
-            const result = await mammoth.extractRawText({ buffer: file.buffer });
-            text = result.value;
-        } else {
-            text = file.buffer.toString('utf8');
-        }
-
-        if (!text || text.trim().length === 0) {
-            throw new Error('Extraction resulted in empty text. Please check the file content.');
-        }
-
-        return res.status(200).json({
-            success: true,
-            fileName: originalName,
-            fileType: mimetype,
-            fileSize: file.size,
-            extractedTextPreview: text.substring(0, 800) + (text.length > 800 ? '...' : '')
-        });
-
-    } catch (error: any) {
-        console.error('[Upload Test] Error:', error);
-        return res.status(500).json({ 
-            success: false, 
-            error: error.message || 'Server error during upload test'
-        });
+    let text = '';
+    if (mimetype === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf')) {
+      const data = await pdfParse(buffer);
+      text = data.text;
+    } else if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || originalName.toLowerCase().endsWith('.docx')) {
+      const result = await mammoth.extractRawText({ buffer });
+      text = result.value;
+    } else {
+      text = buffer.toString('utf8');
     }
+
+    // Cleanup
+    try { fs.unlinkSync(cvFile.filepath); } catch(e) {}
+
+    return res.status(200).json({
+      success: true,
+      fileName: originalName,
+      fileSize: buffer.length,
+      extractedTextPreview: text.substring(0, 1000) + (text.length > 1000 ? '...' : '')
+    });
+
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 }
