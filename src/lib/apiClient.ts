@@ -2,11 +2,17 @@ export async function safeJson(response: Response) {
   const contentType = response.headers.get("content-type");
   if (!contentType || !contentType.includes("application/json")) {
     const text = await response.text();
+    console.error(`[safeJson] Non-JSON response from ${response.url} (Status: ${response.status})`, { 
+      contentType, 
+      textSample: text.substring(0, 200) 
+    });
+    
     // Nettoyer le HTML pour le message d'erreur
     const cleanText = text.substring(0, 300).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
     return { 
       error: `Erreur Serveur (${response.status}): Le serveur n'a pas renvoyé de JSON. Réponse: ${cleanText || 'Vide'}`, 
-      status: response.status 
+      status: response.status,
+      rawResponse: text
     };
   }
   
@@ -108,6 +114,7 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
     const data = await safeJson(response);
 
     if (!response.ok) {
+      console.error(`[apiFetch] HTTP Error: ${response.status}`, data);
       throw new Error(data.error || data.message || `Request failed: ${response.status}`);
     }
 

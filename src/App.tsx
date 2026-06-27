@@ -13,18 +13,20 @@ export default function App() {
 
   // Persistence logic: Try to restore session on mount
   React.useEffect(() => {
+    let isMounted = true;
     const restoreSession = async () => {
       const storedToken = localStorage.getItem('auth_token');
       const storedUser = localStorage.getItem('auth_user');
 
       if (storedToken && storedUser) {
         try {
+          console.log("[App] Attempting to restore session...");
           // Attempt to validate token by fetching current profile
           const userData = await apiFetch('/api/auth/me', {
             headers: { "Authorization": `Bearer ${storedToken}` }
           });
           
-          if (userData) {
+          if (userData && isMounted) {
             setToken(storedToken);
             setUser(userData);
             setCurrentView('dashboard');
@@ -51,10 +53,20 @@ export default function App() {
           localStorage.removeItem('auth_user');
         }
       }
-      setIsLoading(false);
+      if (isMounted) setIsLoading(false);
     };
 
     restoreSession();
+    
+    // Safety timeout: stop loading after 5s no matter what
+    const timer = setTimeout(() => {
+      if (isMounted) setIsLoading(false);
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   const handleLogin = async (jwt: string, userData: any) => {

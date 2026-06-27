@@ -30,6 +30,7 @@ export const config = {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Debug log immédiat
     console.log(`[API DEBUG] Requête reçue: ${req.method} sur ${req.url}`);
+    console.log(`[API DEBUG] Headers: ${JSON.stringify(req.headers)}`);
     
     // Configuration CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -67,7 +68,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         console.log('[CV Upload] Processing multipart form data...');
-        await runMiddleware(req, res, upload.single('cvFile'));
+        try {
+            await runMiddleware(req, res, upload.single('cvFile'));
+        } catch (multerErr: any) {
+            console.error('[CV Upload] Multer error:', multerErr);
+            return res.status(400).json({ success: false, error: `Multer error: ${multerErr.message}` });
+        }
+        
         const file = (req as any).file;
         if (!file) {
             console.warn('[CV Upload] No file provided in request');

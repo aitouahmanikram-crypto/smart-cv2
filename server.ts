@@ -30,6 +30,12 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
+  // Logging middleware
+  app.use((req, res, next) => {
+    console.log(`[Server] Incoming: ${req.method} ${req.url}`);
+    next();
+  });
+
   // API Route Helper to adapt Vercel handlers to Express
   const vercelToExpress = (handler: any, name: string) => async (req: any, res: any) => {
     console.log(`[Server] Routing request to API: ${name} (${req.method})`);
