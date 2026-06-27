@@ -28,29 +28,31 @@ export const config = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // Debug log pour voir ce que le serveur reçoit réellement
-    console.log(`[API] Requête reçue - Méthode: ${req.method} - URL: ${req.url}`);
+    // Debug log immédiat
+    console.log(`[API DEBUG] Requête reçue: ${req.method} sur ${req.url}`);
     
     // Configuration CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
+    // Répondre immédiatement aux requêtes OPTIONS (Preflight)
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
 
+    // Sécurité : Forcer POST
     if (req.method !== 'POST') {
+        console.error(`[API ERROR] Méthode ${req.method} non autorisée.`);
         return res.status(405).json({ 
             success: false, 
-            error: `Erreur 405: La méthode ${req.method} n'est pas autorisée sur cette route. Veuillez utiliser POST.`,
-            debug: { method: req.method, url: req.url }
+            error: `Méthode ${req.method} non autorisée. Utilisez POST.`,
+            details: "Si vous voyez GET, c'est peut-être dû à une redirection ou un problème de configuration client."
         });
     }
 
-    console.log('[CV Upload] Requête POST reçue');
     try {
-        console.log('[CV Upload] Starting upload process...');
+        console.log('[CV Upload] Lancement du processus...');
         const user = await getAuthenticatedUser(req, res);
         if (!user) {
             console.warn('[CV Upload] Authentication failed');
