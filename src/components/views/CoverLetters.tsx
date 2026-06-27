@@ -30,9 +30,10 @@ export default function CoverLetters({ token }: { token: string }) {
           apiFetch("/api/cover-letters", { headers: { "Authorization": `Bearer ${token}` } })
         ]);
         
-        setCvs(cvData);
-        setLetters(lettersData.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        if (cvData.length > 0) {
+        setCvs(Array.isArray(cvData) ? cvData : []);
+        const safeLetters = Array.isArray(lettersData) ? lettersData : [];
+        setLetters(safeLetters.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        if (Array.isArray(cvData) && cvData.length > 0) {
           setForm(prev => ({ ...prev, cvId: cvData[0].id }));
         }
       } catch (err: any) {

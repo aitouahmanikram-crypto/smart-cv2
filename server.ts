@@ -17,6 +17,10 @@ import jobsCreateHandler from './api/jobs/create.js';
 import cvsUploadHandler from './api/cvs/upload.js';
 import cvsUploadTestHandler from './api/cvs/upload-test.js';
 import cvsIndexHandler from './api/cvs/index.js';
+import coverLettersIndexHandler from './api/cover-letters/index.js';
+import coverLettersGenerateHandler from './api/cover-letters/generate.js';
+import settingsLanguageHandler from './api/settings/language.js';
+import matchesSavedHandler from './api/matches/saved.js';
 import adminHandler from './api/admin.js';
 import actionsHandler from './api/actions.js';
 
@@ -72,6 +76,11 @@ async function startServer() {
   app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
   app.all('/api/cvs/upload-test', vercelToExpress(cvsUploadTestHandler, 'cv-upload-test'));
   app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
+  app.all('/api/cover-letters/index', vercelToExpress(coverLettersIndexHandler, 'cover-letters-index'));
+  app.all('/api/cover-letters/generate', vercelToExpress(coverLettersGenerateHandler, 'cover-letters-generate'));
+  app.all('/api/settings/language', vercelToExpress(settingsLanguageHandler, 'settings-language'));
+  app.all('/api/matches/saved', vercelToExpress(matchesSavedHandler, 'matches-saved'));
+  app.all('/api/matches/save/:id', vercelToExpress(matchesSavedHandler, 'matches-save-id'));
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
 

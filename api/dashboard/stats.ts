@@ -38,7 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ] = await Promise.all([
       supabase.from('cvs').select('*').eq('userId', user.id).order('updatedAt', { ascending: false }),
       supabase.from('matches').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
-      supabase.from('letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
+      supabase.from('cover_letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
       supabase.from('activities').select('*').eq('userId', user.id).order('timestamp', { ascending: false }).limit(10)
     ]);
 

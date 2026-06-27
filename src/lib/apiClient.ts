@@ -47,6 +47,9 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
   
   // Clean REST mappings
   if (url === '/api/cvs') finalUrl = '/api/cvs/index';
+  else if (url === '/api/cover-letters') finalUrl = '/api/cover-letters/index';
+  else if (url === '/api/matches/saved') finalUrl = '/api/matches/saved';
+  else if (url === '/api/settings/language') finalUrl = '/api/settings/language';
   else if (url === '/api/jobs') finalUrl = '/api/jobs/index';
 
   console.log(`[apiFetch] Request: ${options.method || 'GET'} ${url} -> ${finalUrl}`, { body: !!options.body });
@@ -57,6 +60,8 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
     // Read as text first to handle empty/non-JSON safely
     const responseText = await response.text();
     
+    console.log(`[apiFetch] Response (${response.status}) from ${finalUrl}: ${responseText.substring(0, 100)}...`);
+
     if (!responseText && !response.ok) {
       throw new Error(`Server returned empty response (Status: ${response.status})`);
     }
@@ -67,6 +72,12 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
         data = JSON.parse(responseText);
       } catch (e) {
         console.error(`[apiFetch] Non-JSON response (Status: ${response.status}):`, responseText.substring(0, 100));
+        
+        // If it's a 404 HTML page, give a clearer error
+        if (responseText.includes("<!DOCTYPE html>")) {
+          throw new Error(`Non-JSON response (404/500): The server returned an HTML page. Ensure the API route ${finalUrl} exists.`);
+        }
+
         if (response.ok) return { success: true, raw: responseText };
         throw new Error(`Non-JSON response (${response.status}): ${responseText.substring(0, 50)}`);
       }

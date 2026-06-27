@@ -127,14 +127,15 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
 
   // 1. DATA GENERATOR: ATS SCORE EVOLUTION OVER TIME
   const getAtsEvolutionData = () => {
-    if (!stats?.cvs || stats.cvs.length === 0) {
+    const cvs = Array.isArray(stats?.cvs) ? stats.cvs : [];
+    if (cvs.length === 0) {
       return [
         { name: "Day 0", score: 65, file: "Baseline Template" },
         { name: "S1", score: 72, file: "First Draft" },
         { name: "S2", score: 85, file: "Optimized Core" }
       ];
     }
-    return [...stats.cvs]
+    return [...cvs]
       .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
       .map((c, idx) => {
         const d = new Date(c.updatedAt);
