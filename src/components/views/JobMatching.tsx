@@ -36,7 +36,18 @@ export default function JobMatching({ token }: { token: string }) {
           apiFetch("/api/matches/saved", { headers: { "Authorization": `Bearer ${token}` } })
         ]);
         
-        setJobs(jobsData);
+        const mergedJobs = [...jobsData];
+        if (Array.isArray(matchesData)) {
+          matchesData.forEach((m: any) => {
+            if (m.customJob && m.customJob.id) {
+              if (!mergedJobs.some((j: any) => j.id === m.customJob.id)) {
+                mergedJobs.unshift(m.customJob);
+              }
+            }
+          });
+        }
+        
+        setJobs(mergedJobs);
         setCvs(cvData);
         setMatches(matchesData);
         

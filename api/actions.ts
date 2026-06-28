@@ -59,15 +59,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (action === 'custom_match') {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-      const { cvId: bodyCvId, jobTitle, jobDescription } = body;
+      const { cvId: bodyCvId, jobTitle, companyName, jobDescription } = body;
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!cv) return res.status(404).json({ success: false, error: "CV not found" });
       const analysis = await analyzeJobMatch(cv.summary, jobDescription);
+      const generatedJobId = `job-custom-${Date.now()}`;
       const matchResult = {
         id: `match-c-${Date.now()}`,
         cvId: bodyCvId,
-        jobId: 'custom',
-        customJob: { title: jobTitle },
+        jobId: generatedJobId,
+        customJob: {
+          id: generatedJobId,
+          title: jobTitle,
+          company: companyName || "Custom Analysis",
+          location: "Remote",
+          salary: "Undisclosed",
+          type: "Custom",
+          description: jobDescription
+        },
         matchScore: analysis.matchScore,
         fitSummary: analysis.fitSummary,
         strengths: analysis.strengths || [],
@@ -107,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { cvId: bodyCvId } = body;
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!cv) return res.status(404).json({ success: false, error: "CV not found" });
-      const advice = await generateCareerAdvice(cv.summary);
+      const advice = await generateCareerAdvice(cv);
       const adviceResult = {
         id: `advice-${Date.now()}`,
         userId: user.id,
@@ -131,7 +140,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!cv) {
           return res.status(404).json({ success: false, error: "CV not found" });
         }
-        const advice = await generateCareerAdvice(cv.summary);
+        const advice = await generateCareerAdvice(cv);
         const adviceResult = {
           id: `advice-${Date.now()}`,
           userId: user.id,
