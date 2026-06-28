@@ -32,15 +32,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const [
       { data: cvs },
-      { data: matches },
       { data: letters },
       { data: recentActivity }
     ] = await Promise.all([
       supabase.from('cvs').select('*').eq('userId', user.id).order('updatedAt', { ascending: false }),
-      supabase.from('matches').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
       supabase.from('cover_letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
       supabase.from('activities').select('*').eq('userId', user.id).order('timestamp', { ascending: false }).limit(10)
     ]);
+
+    let matches: any[] = [];
+    if (cvs && cvs.length > 0) {
+      const cvIds = cvs.map((cv: any) => cv.id);
+      const { data: matchesData } = await supabase
+        .from('matches')
+        .select('*')
+        .in('cvId', cvIds)
+        .order('createdAt', { ascending: false });
+      matches = matchesData || [];
+    }
 
     return res.status(200).json({
       success: true,

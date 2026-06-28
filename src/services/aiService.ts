@@ -147,7 +147,7 @@ export async function parseCVTextAndGenerateSummary(textContent: string) {
 
   try {
     const response = await callGeminiWithRetry({
-      model: "gemini-1.5-flash",
+      model: "gemini-3.5-flash",
       contents: promptMessage,
       config: {
         systemInstruction: "You are an expert HR and ATS parser. Respond with JSON only.",
@@ -254,7 +254,7 @@ export async function generateCoverLetter(options: {
 
   try {
     const response = await callGeminiWithRetry({
-      model: "gemini-1.5-flash",
+      model: "gemini-3.5-flash",
       contents: promptMessage,
       config: {
         systemInstruction: "You are a master executive resume writer. Generate outstanding, custom cover letters. Output JSON only.",
@@ -288,7 +288,7 @@ export async function rewriteCVContent(options: {
 
   try {
     const response = await callGeminiWithRetry({
-      model: "gemini-1.5-flash",
+      model: "gemini-3.5-flash",
       contents: promptMessage,
       config: {
         systemInstruction: "You are an expert resume editor. Rewrite content professionally. Output JSON only.",
@@ -332,7 +332,7 @@ export async function analyzeJobMatch(cvDetails: any, jobDetails: any) {
     // @ts-ignore
     const { Type } = await import("@google/genai");
     const result = await callGeminiWithRetry({
-      model: "gemini-1.5-flash",
+      model: "gemini-3.5-flash",
       contents: promptMessage,
       config: {
         systemInstruction: "You are SmartCV SaaS evaluation bot. Match candidate skills precisely with corporate reqs.",
@@ -397,7 +397,7 @@ export async function generateCareerAdvice(cvDetails: any) {
   try {
     const { Type } = await import("@google/genai");
     const result = await callGeminiWithRetry({
-      model: "gemini-1.5-flash",
+      model: "gemini-3.5-flash",
       contents: promptMessage,
       config: {
         systemInstruction: "You are an expert tech executive career coach. Match resumes to elite industry pipelines. Output JSON only.",

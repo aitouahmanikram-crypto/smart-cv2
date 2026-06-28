@@ -193,11 +193,16 @@ export default function History({ token }: { token: string }) {
     );
   }
 
+  const analyses = Array.isArray(history?.analyses) ? history.analyses : [];
+  const coverLetters = Array.isArray(history?.coverLetters) ? history.coverLetters : [];
+  const matches = Array.isArray(history?.matches) ? history.matches : [];
+  const interviewQuestions = Array.isArray(history?.interviewQuestions) ? history.interviewQuestions : [];
+
   const tabs = [
-    { id: 'analysis', label: 'CV Analyses', icon: FileText, count: history.analyses.length },
-    { id: 'coverLetter', label: 'Cover Letters', icon: Zap, count: history.coverLetters.length },
-    { id: 'match', label: 'Job Matches', icon: TargetIcon, count: history.matches.length },
-    { id: 'interview', label: 'Interview Prep', icon: Activity, count: history.interviewQuestions.length }
+    { id: 'analysis', label: 'CV Analyses', icon: FileText, count: analyses.length },
+    { id: 'coverLetter', label: 'Cover Letters', icon: Zap, count: coverLetters.length },
+    { id: 'match', label: 'Job Matches', icon: TargetIcon, count: matches.length },
+    { id: 'interview', label: 'Interview Prep', icon: Activity, count: interviewQuestions.length }
   ];
 
   return (
@@ -227,8 +232,8 @@ export default function History({ token }: { token: string }) {
       <div className="pt-4">
         {activeTab === 'analysis' && (
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {history.analyses.length === 0 && <p className="text-slate-500 italic col-span-full">No CV Analyses yet.</p>}
-              {history.analyses.map((item: any) => (
+              {analyses.length === 0 && <p className="text-slate-500 italic col-span-full">No CV Analyses yet.</p>}
+              {analyses.map((item: any) => (
                  <div key={item.id} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col group hover:border-slate-700 transition">
                     <div className="flex justify-between items-start mb-4">
                        <span className="px-2 py-1 bg-indigo-500/10 text-indigo-400 text-[10px] uppercase font-bold tracking-wider rounded border border-indigo-500/20">{item.score || 0}/100</span>
@@ -246,8 +251,8 @@ export default function History({ token }: { token: string }) {
 
         {activeTab === 'coverLetter' && (
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {history.coverLetters.length === 0 && <p className="text-slate-500 italic col-span-full">No Cover Letters generated yet.</p>}
-              {history.coverLetters.map((item: any) => (
+              {coverLetters.length === 0 && <p className="text-slate-500 italic col-span-full">No Cover Letters generated yet.</p>}
+              {coverLetters.map((item: any) => (
                  <div key={item.id} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col group hover:border-slate-700 transition">
                     <div className="flex justify-between items-start mb-4">
                        <span className="px-2 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] uppercase font-bold tracking-wider rounded border border-emerald-500/20">Letter</span>
@@ -265,8 +270,8 @@ export default function History({ token }: { token: string }) {
         
         {activeTab === 'match' && (
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {history.matches.length === 0 && <p className="text-slate-500 italic col-span-full">No Job Matches performed yet.</p>}
-              {history.matches.map((item: any) => (
+              {matches.length === 0 && <p className="text-slate-500 italic col-span-full">No Job Matches performed yet.</p>}
+              {matches.map((item: any) => (
                  <div key={item.id} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col group hover:border-slate-700 transition">
                     <div className="flex justify-between items-start mb-4">
                        <span className="px-2 py-1 bg-amber-500/10 text-amber-500 text-[10px] uppercase font-bold tracking-wider rounded border border-amber-500/20">{item.matchScore}% Match</span>
@@ -281,8 +286,8 @@ export default function History({ token }: { token: string }) {
 
         {activeTab === 'interview' && (
            <div className="grid grid-cols-1 gap-4">
-              {history.interviewQuestions.length === 0 && <p className="text-slate-500 italic col-span-full">No Interview Questions saved. These will appear when they are extracted from new CV Analysis uploads.</p>}
-              {history.interviewQuestions.map((item: any) => (
+              {interviewQuestions.length === 0 && <p className="text-slate-500 italic col-span-full">No Interview Questions saved. These will appear when they are extracted from new CV Analysis uploads.</p>}
+              {interviewQuestions.map((item: any) => (
                  <div key={item.id} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col group hover:border-slate-700 transition">
                     <div className="flex justify-between items-start mb-4">
                        <span className="px-2 py-1 bg-purple-500/10 text-purple-400 text-[10px] uppercase font-bold tracking-wider rounded border border-purple-500/20">{item.category}</span>

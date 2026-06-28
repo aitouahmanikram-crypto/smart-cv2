@@ -83,6 +83,12 @@ async function startServer() {
   app.all('/api/matches/save/:id', vercelToExpress(matchesSavedHandler, 'matches-save-id'));
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
+  
+  // Catch-all for API that didn't match any route
+  app.use('/api/*', (req, res) => {
+    console.log(`[Server] API Route not found: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ success: false, error: `API Route not found: ${req.method} ${req.originalUrl}` });
+  });
 
   // Serve static files in production, use Vite middleware in development
   if (process.env.NODE_ENV === 'production') {

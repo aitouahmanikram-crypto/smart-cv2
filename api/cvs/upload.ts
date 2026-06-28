@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import formidable from 'formidable';
 import fs from 'fs';
-import pdfParse from 'pdf-parse';
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import { getAuthenticatedUser } from '../_lib/middleware.js';
 import { getSupabase } from '../_lib/db.js';
@@ -109,7 +109,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const analysis = await parseCVTextAndGenerateSummary(text);
 
     // 6. Database Storage
-    let dbId = 'temp-' + Date.now();
+    const generatedId = `cv-${Date.now()}`;
+    let dbId = generatedId;
     const now = new Date().toISOString();
 
     if (user) {
@@ -118,19 +119,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const { data: dbData, error: dbError } = await supabase
           .from('cvs')
           .insert([{
+            id: generatedId,
             userId: user.id,
             fileName: originalFilename,
-            fullText: text,
-            summary: analysis.summary,
-            score: analysis.score,
-            parsedDetails: analysis.parsedDetails,
-            strengths: analysis.strengths,
-            weaknesses: analysis.weaknesses,
-            recommendations: analysis.recommendations,
-            skills: analysis.skills,
             status: 'processed',
-            updatedAt: now,
-            createdAt: now
+            score: analysis.score,
+            grammarScore: analysis.grammarScore,
+            impactScore: analysis.impactScore,
+            skillsScore: analysis.skillsScore,
+            summary: analysis.summary,
+            strengths: analysis.strengths || [],
+            weaknesses: analysis.weaknesses || [],
+            atsOptimizations: analysis.atsOptimizations || [],
+            grammarImprovements: analysis.grammarImprovements || [],
+            recommendations: analysis.recommendations || [],
+            skillsMatched: analysis.skillsMatched || [],
+            skillsMissing: analysis.skillsMissing || [],
+            parsedDetails: {
+              ...(analysis.parsedDetails || {}),
+              hrQuestions: analysis.hrQuestions || [],
+              technicalQuestions: analysis.technicalQuestions || [],
+              behavioralQuestions: analysis.behavioralQuestions || [],
+              situationalQuestions: analysis.situationalQuestions || []
+            },
+            updatedAt: now
           }])
           .select()
           .single();

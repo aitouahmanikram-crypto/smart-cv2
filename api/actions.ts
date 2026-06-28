@@ -26,7 +26,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Matches
     if (action === 'list_matches') {
-      const { data, error } = await supabase.from('matches').select('*').eq('userId', user.id);
+      const { data: userCvs, error: cvsError } = await supabase.from('cvs').select('id').eq('userId', user.id);
+      if (cvsError) throw cvsError;
+      if (!userCvs || userCvs.length === 0) {
+        return res.status(200).json({ success: true, data: [] });
+      }
+      const cvIds = userCvs.map((cv: any) => cv.id);
+      const { data, error } = await supabase.from('matches').select('*').in('cvId', cvIds);
       if (error) throw error;
       return res.status(200).json({ success: true, data: data || [] });
     }
@@ -37,7 +43,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data: job } = await supabase.from('jobs').select('*').eq('id', jobId).maybeSingle();
       if (!cv || !job) return res.status(404).json({ success: false, error: "CV or Job not found" });
       const analysis = await analyzeJobMatch(cv.summary, job.description);
-      const matchResult = { id: `match-${Date.now()}`, userId: user.id, cvId: bodyCvId, jobId, ...analysis, createdAt: new Date().toISOString() };
+      const matchResult = {
+        id: `match-${Date.now()}`,
+        cvId: bodyCvId,
+        jobId,
+        matchScore: analysis.matchScore,
+        fitSummary: analysis.fitSummary,
+        strengths: analysis.strengths || [],
+        gaps: analysis.gaps || [],
+        applicationStrategy: analysis.applicationStrategy,
+        createdAt: new Date().toISOString()
+      };
       await supabase.from('matches').insert([matchResult]);
       return res.status(200).json({ success: true, data: matchResult });
     }
@@ -47,7 +63,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!cv) return res.status(404).json({ success: false, error: "CV not found" });
       const analysis = await analyzeJobMatch(cv.summary, jobDescription);
-      const matchResult = { id: `match-c-${Date.now()}`, userId: user.id, cvId: bodyCvId, customJob: { title: jobTitle }, ...analysis, createdAt: new Date().toISOString() };
+      const matchResult = {
+        id: `match-c-${Date.now()}`,
+        cvId: bodyCvId,
+        jobId: 'custom',
+        customJob: { title: jobTitle },
+        matchScore: analysis.matchScore,
+        fitSummary: analysis.fitSummary,
+        strengths: analysis.strengths || [],
+        gaps: analysis.gaps || [],
+        applicationStrategy: analysis.applicationStrategy,
+        createdAt: new Date().toISOString()
+      };
       await supabase.from('matches').insert([matchResult]);
       return res.status(200).json({ success: true, data: matchResult });
     }
@@ -81,13 +108,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!cv) return res.status(404).json({ success: false, error: "CV not found" });
       const advice = await generateCareerAdvice(cv.summary);
-      const adviceResult = { id: `advice-${Date.now()}`, userId: user.id, cvId: bodyCvId, ...advice, createdAt: new Date().toISOString() };
+      const adviceResult = {
+        id: `advice-${Date.now()}`,
+        userId: user.id,
+        cvId: bodyCvId,
+        career_paths: advice.careerPaths || [],
+        salary_estimation: advice.salaryEstimation || {},
+        skills_gap: advice.skillsGap || {},
+        roadmap: advice.roadmap || {},
+        createdAt: new Date().toISOString()
+      };
       await supabase.from('career_advice').insert([adviceResult]);
       return res.status(200).json({ success: true, data: adviceResult });
     }
     if (action === 'get_career_advice') {
-      const { data, error } = await supabase.from('career_advice').select('*').eq('cvId', cvId).maybeSingle();
+      let { data, error } = await supabase.from('career_advice').select('*').eq('cvId', cvId).maybeSingle();
       if (error) throw error;
+
+      if (!data) {
+        console.log(`[get_career_advice] Advice not found for cvId: ${cvId}. Generating on the fly.`);
+        const { data: cv } = await supabase.from('cvs').select('*').eq('id', cvId).maybeSingle();
+        if (!cv) {
+          return res.status(404).json({ success: false, error: "CV not found" });
+        }
+        const advice = await generateCareerAdvice(cv.summary);
+        const adviceResult = {
+          id: `advice-${Date.now()}`,
+          userId: user.id,
+          cvId: String(cvId),
+          career_paths: advice.careerPaths || [],
+          salary_estimation: advice.salaryEstimation || {},
+          skills_gap: advice.skillsGap || {},
+          roadmap: advice.roadmap || {},
+          createdAt: new Date().toISOString()
+        };
+        const { error: insertError } = await supabase.from('career_advice').insert([adviceResult]);
+        if (insertError) {
+          console.error('[get_career_advice] Insert error:', insertError);
+        }
+        data = adviceResult;
+      }
       return res.status(200).json({ success: true, data });
     }
 
@@ -118,16 +178,84 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // History
     if (action === 'list_history') {
-      const [{ data: cvs }, { data: letters }, { data: matches }] = await Promise.all([
+      const [{ data: cvs }, { data: letters }] = await Promise.all([
         supabase.from('cvs').select('*').eq('userId', user.id).order('updatedAt', { ascending: false }),
-        supabase.from('cover_letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false }),
-        supabase.from('matches').select('*').eq('userId', user.id).order('createdAt', { ascending: false })
+        supabase.from('cover_letters').select('*').eq('userId', user.id).order('createdAt', { ascending: false })
       ]);
-      return res.status(200).json({ success: true, data: { cvs: cvs || [], letters: letters || [], matches: matches || [] } });
+
+      let matches: any[] = [];
+      if (cvs && cvs.length > 0) {
+        const cvIds = cvs.map((cv: any) => cv.id);
+        const { data: matchesData } = await supabase
+          .from('matches')
+          .select('*')
+          .in('cvId', cvIds)
+          .order('createdAt', { ascending: false });
+        matches = matchesData || [];
+      }
+
+      const interviewQuestions: any[] = [];
+      if (cvs && Array.isArray(cvs)) {
+        cvs.forEach((cv: any) => {
+          const details = typeof cv.parsedDetails === 'string' ? JSON.parse(cv.parsedDetails) : cv.parsedDetails || {};
+          if (details.hrQuestions && details.hrQuestions.length > 0) {
+            interviewQuestions.push({
+              id: `${cv.id}-hr`,
+              category: 'HR / General',
+              questions: details.hrQuestions,
+              createdAt: cv.updatedAt
+            });
+          }
+          if (details.technicalQuestions && details.technicalQuestions.length > 0) {
+            interviewQuestions.push({
+              id: `${cv.id}-tech`,
+              category: 'Technical',
+              questions: details.technicalQuestions,
+              createdAt: cv.updatedAt
+            });
+          }
+          if (details.behavioralQuestions && details.behavioralQuestions.length > 0) {
+            interviewQuestions.push({
+              id: `${cv.id}-behavioral`,
+              category: 'Behavioral',
+              questions: details.behavioralQuestions,
+              createdAt: cv.updatedAt
+            });
+          }
+          if (details.situationalQuestions && details.situationalQuestions.length > 0) {
+            interviewQuestions.push({
+              id: `${cv.id}-situational`,
+              category: 'Situational',
+              questions: details.situationalQuestions,
+              createdAt: cv.updatedAt
+            });
+          }
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          analyses: cvs || [],
+          coverLetters: letters || [],
+          matches: matches || [],
+          interviewQuestions
+        }
+      });
     }
     if (action === 'delete_history_item') {
-      const tableMap: any = { cvs: 'cvs', letters: 'cover_letters', matches: 'matches' };
-      const table = tableMap[String(type)] || 'cvs';
+      const tableMap: any = { 
+        analysis: 'cvs', 
+        analyses: 'cvs', 
+        cvs: 'cvs', 
+        coverLetter: 'cover_letters', 
+        letters: 'cover_letters', 
+        coverLetters: 'cover_letters', 
+        match: 'matches', 
+        matches: 'matches' 
+      };
+      const table = tableMap[String(type)];
+      if (!table) return res.status(400).json({ success: false, error: "Invalid type for deletion" });
       await supabase.from(table).delete().eq('id', id).eq('userId', user.id);
       return res.status(200).json({ success: true });
     }
