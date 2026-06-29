@@ -261,12 +261,13 @@ export default function JobMatching({ token }: { token: string }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {jobs.map((job) => {
+        {jobs.map((job, idx) => {
            const existingMatch = matches.find(m => m.jobId === job.id && m.cvId === selectedCv);
            const isAnalyzing = matchingStatus[job.id];
+           const uniqueKey = job.id ? `${job.id}-${idx}` : `job-${idx}`;
            
            return (
-             <div key={job.id} className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 backdrop-blur-sm flex flex-col justify-between group relative">
+             <div key={uniqueKey} className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 backdrop-blur-sm flex flex-col justify-between group relative">
                <div>
                  <div className="flex justify-between items-start mb-4">
                    <div>

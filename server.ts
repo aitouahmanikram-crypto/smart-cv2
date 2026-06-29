@@ -63,6 +63,13 @@ async function startServer() {
     }
   };
 
+  // Middleware to inject query action for actions routing
+  const actionsWithDefault = (actionName: string) => async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    if (!req.query.action) req.query.action = actionName;
+    next();
+  };
+
   // API Routes
   app.all('/api/health', vercelToExpress(healthHandler, 'health'));
   app.all('/api/auth/login', vercelToExpress(loginHandler, 'login'));
@@ -71,16 +78,64 @@ async function startServer() {
   app.all('/api/auth/logout', vercelToExpress(logoutHandler, 'logout'));
   app.all('/api/dashboard/stats', vercelToExpress(dashboardStatsHandler, 'stats'));
   app.all('/api/profile/update', vercelToExpress(profileUpdateHandler, 'update-profile'));
+  
+  // Jobs
+  app.all('/api/jobs', vercelToExpress(jobsIndexHandler, 'jobs-index-clean'));
   app.all('/api/jobs/index', vercelToExpress(jobsIndexHandler, 'jobs-index'));
   app.all('/api/jobs/create', vercelToExpress(jobsCreateHandler, 'jobs-create'));
+  
+  // CVs
+  app.all('/api/cvs', vercelToExpress(cvsIndexHandler, 'cvs-index-clean'));
+  app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
   app.all('/api/cvs/upload', vercelToExpress(cvsUploadHandler, 'cv-upload'));
   app.all('/api/cvs/upload-test', vercelToExpress(cvsUploadTestHandler, 'cv-upload-test'));
-  app.all('/api/cvs/index', vercelToExpress(cvsIndexHandler, 'cvs-index'));
+  app.all('/api/cvs/rewrite', actionsWithDefault('rewrite_cv'), vercelToExpress(actionsHandler, 'actions-rewrite-cv'));
+  app.all('/api/cvs/:cvId/versions', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'cv_versions';
+    req.query.cvId = req.params.cvId;
+    next();
+  }, vercelToExpress(actionsHandler, 'actions-cv-versions'));
+  app.all('/api/cvs/:cvId/versions/:versionId/restore', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'restore_cv_version';
+    req.query.cvId = req.params.cvId;
+    req.query.versionId = req.params.versionId;
+    next();
+  }, vercelToExpress(actionsHandler, 'actions-restore-cv-version'));
+
+  // Cover Letters
+  app.all('/api/cover-letters', vercelToExpress(coverLettersIndexHandler, 'cover-letters-index-clean'));
   app.all('/api/cover-letters/index', vercelToExpress(coverLettersIndexHandler, 'cover-letters-index'));
   app.all('/api/cover-letters/generate', vercelToExpress(coverLettersGenerateHandler, 'cover-letters-generate'));
-  app.all('/api/settings/language', vercelToExpress(settingsLanguageHandler, 'settings-language'));
+  
+  // Matches & Settings
+  app.all('/api/matches', actionsWithDefault('list_matches'), vercelToExpress(actionsHandler, 'actions-list-matches'));
   app.all('/api/matches/saved', vercelToExpress(matchesSavedHandler, 'matches-saved'));
   app.all('/api/matches/save/:id', vercelToExpress(matchesSavedHandler, 'matches-save-id'));
+  app.all('/api/matches/analyze', actionsWithDefault('analyze_match'), vercelToExpress(actionsHandler, 'actions-analyze-match'));
+  app.all('/api/matches/custom', actionsWithDefault('custom_match'), vercelToExpress(actionsHandler, 'actions-custom-match'));
+  
+  app.all('/api/settings', actionsWithDefault('get_settings'), vercelToExpress(actionsHandler, 'actions-get-settings'));
+  app.all('/api/settings/language', vercelToExpress(settingsLanguageHandler, 'settings-language'));
+  
+  // History & Career Advice
+  app.all('/api/history', actionsWithDefault('list_history'), vercelToExpress(actionsHandler, 'actions-list-history'));
+  app.all('/api/history/:type/:id', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'delete_history_item';
+    req.query.type = req.params.type;
+    req.query.id = req.params.id;
+    next();
+  }, vercelToExpress(actionsHandler, 'actions-delete-history'));
+
+  app.all('/api/career-advice/:cvId', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'get_career_advice';
+    req.query.cvId = req.params.cvId;
+    next();
+  }, vercelToExpress(actionsHandler, 'actions-get-career-advice'));
+
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
   

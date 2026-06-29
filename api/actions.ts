@@ -4,6 +4,7 @@ import { runCors } from './_lib/cors.js';
 import { getAuthenticatedUser } from './_lib/middleware.js';
 import { analyzeJobMatch, generateCareerAdvice, generateCoverLetter, rewriteCVContent } from '../src/services/aiService.js';
 import { logActivity } from './_lib/utils.js';
+import { localDb } from './_lib/localDb.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') {
@@ -42,7 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       const { data: job } = await supabase.from('jobs').select('*').eq('id', jobId).maybeSingle();
       if (!cv || !job) return res.status(404).json({ success: false, error: "CV or Job not found" });
-      const analysis = await analyzeJobMatch(cv.summary, job.description);
+      const analysis = await analyzeJobMatch(cv, job);
       const matchResult = {
         id: `match-${Date.now()}`,
         cvId: bodyCvId,
@@ -62,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { cvId: bodyCvId, jobTitle, companyName, jobDescription } = body;
       const { data: cv } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!cv) return res.status(404).json({ success: false, error: "CV not found" });
-      const analysis = await analyzeJobMatch(cv.summary, jobDescription);
+      const analysis = await analyzeJobMatch(cv, { title: jobTitle, company: companyName, description: jobDescription });
       const generatedJobId = `job-custom-${Date.now()}`;
       const matchResult = {
         id: `match-c-${Date.now()}`,
@@ -107,9 +108,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Career Advice
     if (action === 'list_career_advice') {
-      const { data, error } = await supabase.from('career_advice').select('*').eq('userId', user.id).order('createdAt', { ascending: false });
-      if (error) throw error;
-      return res.status(200).json({ success: true, data: data || [] });
+      try {
+        const { data, error } = await supabase.from('career_advice').select('*').eq('userId', user.id).order('createdAt', { ascending: false });
+        if (error) {
+          if (error.message?.includes('Could not find') || error.message?.includes('does not exist')) {
+            console.log('[list_career_advice] Table career_advice does not exist, falling back to localDb.');
+            const list = localDb.get('career_advice', (item) => item.userId === user.id);
+            list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            return res.status(200).json({ success: true, data: list });
+          }
+          throw error;
+        }
+        return res.status(200).json({ success: true, data: data || [] });
+      } catch (err: any) {
+        if (err.message?.includes('Could not find') || err.message?.includes('does not exist')) {
+          console.log('[list_career_advice] Caught error, falling back to localDb:', err.message);
+          const list = localDb.get('career_advice', (item) => item.userId === user.id);
+          list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          return res.status(200).json({ success: true, data: list });
+        }
+        throw err;
+      }
     }
     if (action === 'generate_career_advice') {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
@@ -127,12 +146,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         roadmap: advice.roadmap || {},
         createdAt: new Date().toISOString()
       };
-      await supabase.from('career_advice').insert([adviceResult]);
+      
+      try {
+        const { error: insertError } = await supabase.from('career_advice').insert([adviceResult]);
+        if (insertError) {
+          if (insertError.message?.includes('Could not find') || insertError.message?.includes('does not exist')) {
+            console.log('[generate_career_advice] Table career_advice does not exist, falling back to localDb.');
+            localDb.insert('career_advice', adviceResult);
+          } else {
+            throw insertError;
+          }
+        }
+      } catch (err: any) {
+        if (err.message?.includes('Could not find') || err.message?.includes('does not exist')) {
+          console.log('[generate_career_advice] Caught error, falling back to localDb:', err.message);
+          localDb.insert('career_advice', adviceResult);
+        } else {
+          throw err;
+        }
+      }
       return res.status(200).json({ success: true, data: adviceResult });
     }
     if (action === 'get_career_advice') {
-      let { data, error } = await supabase.from('career_advice').select('*').eq('cvId', cvId).maybeSingle();
-      if (error) throw error;
+      let data: any = null;
+      let hasTable = true;
+      try {
+        let { data: dbData, error } = await supabase.from('career_advice').select('*').eq('cvId', cvId).maybeSingle();
+        if (error) {
+          if (error.message?.includes('Could not find') || error.message?.includes('does not exist')) {
+            hasTable = false;
+            data = localDb.getOne('career_advice', (item) => item.cvId === cvId);
+          } else {
+            throw error;
+          }
+        } else {
+          data = dbData;
+        }
+      } catch (err: any) {
+        if (err.message?.includes('Could not find') || err.message?.includes('does not exist')) {
+          hasTable = false;
+          data = localDb.getOne('career_advice', (item) => item.cvId === cvId);
+        } else {
+          throw err;
+        }
+      }
 
       if (!data) {
         console.log(`[get_career_advice] Advice not found for cvId: ${cvId}. Generating on the fly.`);
@@ -151,9 +208,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           roadmap: advice.roadmap || {},
           createdAt: new Date().toISOString()
         };
-        const { error: insertError } = await supabase.from('career_advice').insert([adviceResult]);
-        if (insertError) {
-          console.error('[get_career_advice] Insert error:', insertError);
+        
+        if (hasTable) {
+          try {
+            const { error: insertError } = await supabase.from('career_advice').insert([adviceResult]);
+            if (insertError) {
+              if (insertError.message?.includes('Could not find') || insertError.message?.includes('does not exist')) {
+                localDb.insert('career_advice', adviceResult);
+              } else {
+                console.error('[get_career_advice] Insert error:', insertError);
+              }
+            }
+          } catch (err: any) {
+            if (err.message?.includes('Could not find') || err.message?.includes('does not exist')) {
+              localDb.insert('career_advice', adviceResult);
+            } else {
+              console.error('[get_career_advice] Catch insert error:', err);
+            }
+          }
+        } else {
+          localDb.insert('career_advice', adviceResult);
         }
         data = adviceResult;
       }
@@ -280,8 +354,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ success: true, data: data ? data[0] : null });
     }
     if (action === 'cv_versions') {
-      const { data } = await supabase.from('cv_versions').select('*').eq('cvId', cvId).order('versionNumber', { ascending: false });
-      return res.status(200).json({ success: true, data: data || [] });
+      try {
+        const { data, error } = await supabase.from('cv_versions').select('*').eq('cvId', cvId).order('versionNumber', { ascending: false });
+        if (error) {
+          if (error.message?.includes('Could not find') || error.message?.includes('does not exist')) {
+            console.log('[cv_versions] Table cv_versions does not exist, falling back to localDb.');
+            const list = localDb.get('cv_versions', (item) => item.cvId === cvId);
+            list.sort((a: any, b: any) => b.versionNumber - a.versionNumber);
+            return res.status(200).json({ success: true, data: list });
+          }
+          throw error;
+        }
+        return res.status(200).json({ success: true, data: data || [] });
+      } catch (err: any) {
+        if (err.message?.includes('Could not find') || err.message?.includes('does not exist')) {
+          console.log('[cv_versions] Caught error, falling back to localDb:', err.message);
+          const list = localDb.get('cv_versions', (item) => item.cvId === cvId);
+          list.sort((a: any, b: any) => b.versionNumber - a.versionNumber);
+          return res.status(200).json({ success: true, data: list });
+        }
+        throw err;
+      }
     }
     if (action === 'restore_cv_version') {
       return res.status(200).json({ success: true, message: "Version restored" });
@@ -298,6 +391,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ success: false, error: "Invalid action", action });
   } catch (err: any) {
     console.error('[Actions Error]:', err);
-    return res.status(500).json({ success: false, error: "Internal server error" });
+    return res.status(500).json({ 
+      success: false, 
+      error: err?.message || String(err),
+      details: err?.details || null,
+      stack: err?.stack || null
+    });
   }
 }

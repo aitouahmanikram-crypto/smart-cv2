@@ -306,17 +306,38 @@ export async function rewriteCVContent(options: {
 }
 
 export async function analyzeJobMatch(cvDetails: any, jobDetails: any) {
+  const jobTitle = typeof jobDetails === 'string' ? "Target Position" : (jobDetails?.title || "Target Position");
+  const jobCompany = typeof jobDetails === 'string' ? "the company" : (jobDetails?.company || "Not specified");
+  const jobDescription = typeof jobDetails === 'string' ? jobDetails : (jobDetails?.description || "");
+  const jobRequirements = typeof jobDetails === 'string' ? "Not specified" : (jobDetails?.requirements ? JSON.stringify(jobDetails.requirements) : "Not specified");
+
+  const cvSummary = typeof cvDetails === 'string' ? cvDetails : (cvDetails?.summary || "");
+  let cvSkills = [];
+  if (cvDetails && typeof cvDetails === 'object') {
+    let detailsObj: any = {};
+    if (cvDetails?.parsedDetails) {
+      if (typeof cvDetails.parsedDetails === 'string') {
+        try {
+          detailsObj = JSON.parse(cvDetails.parsedDetails);
+        } catch (_) {}
+      } else {
+        detailsObj = cvDetails.parsedDetails;
+      }
+    }
+    cvSkills = detailsObj?.skills || cvDetails?.skillsMatched || cvDetails?.skills || [];
+  }
+
   const promptMessage = `
     Compare the candidate CV with the target Job application profile:
 
-    Job Title: ${jobDetails.title}
-    Company: ${jobDetails.company || "Not specified"}
-    Job Requirements: ${jobDetails.requirements ? JSON.stringify(jobDetails.requirements) : "Not specified"}
-    Job Description: ${jobDetails.description}
+    Job Title: ${jobTitle}
+    Company: ${jobCompany}
+    Job Requirements: ${jobRequirements}
+    Job Description: ${jobDescription}
 
     Candidate Resume Details:
-    Skills: ${JSON.stringify(cvDetails?.skills || [])}
-    Experience Summary: ${JSON.stringify(cvDetails?.experience || [])}
+    Summary: ${cvSummary}
+    Skills: ${JSON.stringify(cvSkills)}
 
     Analyze carefully:
     1. What is the match percentage? (matchScore: 0-100)
@@ -372,9 +393,22 @@ export async function analyzeJobMatch(cvDetails: any, jobDetails: any) {
 }
 
 export async function generateCareerAdvice(cvDetails: any) {
-  const skills = JSON.stringify(cvDetails?.parsedDetails?.skills || cvDetails?.skillsMatched || cvDetails?.skills || []);
-  const experience = JSON.stringify(cvDetails?.parsedDetails?.experience || cvDetails?.experience || []);
-  const education = JSON.stringify(cvDetails?.parsedDetails?.education || cvDetails?.education || []);
+  let detailsObj: any = {};
+  if (cvDetails?.parsedDetails) {
+    if (typeof cvDetails.parsedDetails === 'string') {
+      try {
+        detailsObj = JSON.parse(cvDetails.parsedDetails);
+      } catch (e) {
+        detailsObj = {};
+      }
+    } else {
+      detailsObj = cvDetails.parsedDetails;
+    }
+  }
+
+  const skills = JSON.stringify(detailsObj?.skills || cvDetails?.skillsMatched || cvDetails?.skills || []);
+  const experience = JSON.stringify(detailsObj?.experience || cvDetails?.experience || []);
+  const education = JSON.stringify(detailsObj?.education || cvDetails?.education || []);
   const summary = cvDetails?.summary || "";
 
   const promptMessage = `
