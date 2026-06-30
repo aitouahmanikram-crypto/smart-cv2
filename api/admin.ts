@@ -93,6 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ success: true });
       }
       if (req.method === 'DELETE' && id) {
+        console.log("[DELETE] type: admin_job, id:", id);
         const { error } = await supabase.from('jobs').delete().eq('id', id);
         if (error) throw error;
         return res.status(200).json({ success: true });
@@ -114,6 +115,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ success: true });
       }
       if (req.method === 'DELETE' && id) {
+        console.log("[DELETE] type: admin_user, id:", id);
         // Delete all dependent records for this user first
         const userDependents = [
           'cv_versions',

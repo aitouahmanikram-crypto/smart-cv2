@@ -26,15 +26,68 @@ export default function History({ token }: { token: string }) {
   };
 
   const deleteItem = async (type: string, id: string) => {
-    if(!confirm("Delete this record permanently?")) return;
+    let finalType = type;
+    if (typeof id === 'string') {
+      if (id.startsWith('cv-')) {
+        finalType = 'analysis';
+      } else if (id.startsWith('letter-')) {
+        finalType = 'coverLetter';
+      } else if (id.startsWith('match-')) {
+        finalType = 'match';
+      } else if (id.endsWith('-hr') || id.endsWith('-tech') || id.endsWith('-behavioral') || id.endsWith('-situational')) {
+        finalType = 'interview';
+      }
+    }
+
+    console.log("Delete clicked:", id, "Detected finalType:", finalType);
+    
+    console.log("DELETE request:", "/api/actions?action=delete_item", {
+      id,
+      type: finalType
+    });
+
     try {
-      await apiFetch(`/api/history/${type}/${id}`, {
-        method: 'DELETE',
-        headers: { "Authorization": `Bearer ${token}` }
+      const response = await apiFetch("/api/actions?action=delete_item", {
+        method: "POST",
+        body: JSON.stringify({
+          id,
+          type: finalType
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
       });
+
+      console.log("DELETE response:", response);
+
+      if (!response || !response.success) {
+        throw new Error((response && response.error) || "Delete failed");
+      }
+
+      // Remove item from UI state immediately after success
+      setHistory((prev: any) => {
+        const keyMap: Record<string, string> = {
+          analysis: 'analyses',
+          coverLetter: 'coverLetters',
+          match: 'matches',
+          interview: 'interviewQuestions'
+        };
+        const key = keyMap[finalType];
+        if (!key || !prev[key]) return prev;
+        return {
+          ...prev,
+          [key]: prev[key].filter((item: any) => item.id !== id)
+        };
+      });
+
+      // Refetch history in background to confirm sync and list changes
       fetchHistory();
-    } catch (err) {
-      console.error(err);
+    } catch (error: any) {
+      console.error("DELETE failed:", error);
+      alert(error.message || "Failed to delete item. Please try again.");
+      // Rollback or refetch original data on failure
+      fetchHistory();
     }
   };
 

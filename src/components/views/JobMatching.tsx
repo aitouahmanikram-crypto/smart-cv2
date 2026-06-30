@@ -74,19 +74,47 @@ export default function JobMatching({ token }: { token: string }) {
 
   const toggleBookmark = async (matchId: string) => {
     const isCurrentlySaved = savedMatchIds[matchId];
+    if (isCurrentlySaved) {
+      console.log("Delete clicked:", matchId);
+      let shouldDelete = true;
+      try {
+        shouldDelete = confirm("Are you sure you want to delete this item?");
+      } catch (e) {
+        shouldDelete = true;
+      }
+      if (!shouldDelete) return;
+    }
+    
+    // Store current state for potential rollback
+    const originalSavedState = { ...savedMatchIds };
+    const endpoint = `/api/matches/save/${matchId}`;
+    if (isCurrentlySaved) {
+      console.log("DELETE request:", endpoint);
+    }
+
     try {
-      await apiFetch(`/api/matches/save/${matchId}`, {
+      // Remove or add item from UI state immediately
+      setSavedMatchIds(prev => ({
+        ...prev,
+        [matchId]: !isCurrentlySaved
+      }));
+
+      const response = await apiFetch(endpoint, {
         method: isCurrentlySaved ? "DELETE" : "POST",
         headers: {
           "Authorization": `Bearer ${token}`
         }
       });
-      setSavedMatchIds(prev => ({
-        ...prev,
-        [matchId]: !isCurrentlySaved
-      }));
+
+      if (isCurrentlySaved) {
+        console.log("DELETE response:", response);
+      }
     } catch (err: any) {
-      setError(err.message);
+      console.error("Error toggling bookmark:", err);
+      setError(err.message || "Failed to update bookmark.");
+      alert(err.message || "Failed to update bookmark. Please try again.");
+      // Rollback state on error
+      setSavedMatchIds(originalSavedState);
     }
   };
 

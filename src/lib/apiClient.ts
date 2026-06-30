@@ -29,85 +29,94 @@ export async function safeJson(response: Response) {
 let mockCVs: any[] = [];
 
 export async function apiFetch(url: string, options: RequestInit = {}) {
-  // Only intercept for mock mode if explicitly enabled via environment variable
-  if (MOCK_MODE) {
-    console.log(`[apiFetch] MOCK MODE ACTIVE: Intercepting ${url}`);
-    const mockData = getMockData(url, options) as any;
-    
-    // Simulate delay
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
-    if (mockData && typeof mockData === 'object' && 'success' in mockData) {
-       return mockData.data !== undefined ? mockData.data : mockData;
-    }
-    return mockData;
-  }
-
-  let finalUrl = url;
-  
-  // Clean REST mappings
-  if (url === '/api/cvs') finalUrl = '/api/cvs/index';
-  else if (url === '/api/cover-letters') finalUrl = '/api/cover-letters/index';
-  else if (url === '/api/matches') finalUrl = '/api/actions?action=list_matches';
-  else if (url === '/api/matches/saved') finalUrl = '/api/matches/saved';
-  else if (url === '/api/settings/language') finalUrl = '/api/settings/language';
-  else if (url === '/api/settings') finalUrl = '/api/actions?action=get_settings';
-  else if (url === '/api/jobs') finalUrl = '/api/jobs/index';
-  else if (url === '/api/history') finalUrl = '/api/actions?action=list_history';
-  else if (url.startsWith('/api/history/')) {
-    const parts = url.split('/');
-    const type = parts[3];
-    const id = parts[4];
-    finalUrl = `/api/actions?action=delete_history_item&type=${type}&id=${id}`;
-  }
-  else if (url === '/api/matches/analyze') finalUrl = '/api/actions?action=analyze_match';
-  else if (url === '/api/matches/custom') finalUrl = '/api/actions?action=custom_match';
-  else if (url.startsWith('/api/matches/save/')) {
-    const id = url.split('/').pop();
-    finalUrl = `/api/actions?action=toggle_save_match&id=${id}`;
-  }
-  else if (url === '/api/cvs/rewrite') finalUrl = '/api/actions?action=rewrite_cv';
-  else if (url.startsWith('/api/cvs/') && url.endsWith('/versions')) {
-    const cvId = url.split('/')[3];
-    finalUrl = `/api/actions?action=cv_versions&cvId=${cvId}`;
-  }
-  else if (url.startsWith('/api/cvs/') && url.includes('/versions/') && url.endsWith('/restore')) {
-    const parts = url.split('/');
-    const cvId = parts[3];
-    const versionId = parts[5];
-    finalUrl = `/api/actions?action=restore_cv_version&cvId=${cvId}&versionId=${versionId}`;
-  }
-  else if (url === '/api/admin/stats') finalUrl = '/api/admin?action=stats';
-  else if (url === '/api/admin/users') finalUrl = '/api/admin?action=users';
-  else if (url === '/api/admin/jobs') finalUrl = '/api/admin?action=jobs';
-  else if (url === '/api/admin/settings') finalUrl = '/api/admin?action=settings';
-  else if (url === '/api/admin/seed-demo') finalUrl = '/api/admin?action=seed';
-  else if (url.startsWith('/api/admin/users/')) {
-    const userId = url.split('/')[4];
-    if (url.endsWith('/reset-password')) {
-      finalUrl = `/api/admin?action=reset-password&id=${userId}`;
-    } else {
-      finalUrl = `/api/admin?action=users&id=${userId}`;
-    }
-  }
-  else if (url.startsWith('/api/admin/jobs/')) {
-    const jobId = url.split('/')[4];
-    finalUrl = `/api/admin?action=jobs&id=${jobId}`;
-  }
-  else if (url.startsWith('/api/career-advice/')) {
-    const cvId = url.split('/').pop();
-    finalUrl = `/api/actions?action=get_career_advice&cvId=${cvId}`;
-  }
-
-  console.log(`[apiFetch] Request: ${options.method || 'GET'} ${url} -> ${finalUrl}`, { body: !!options.body });
-
+  console.log("[apiFetch] START", url);
   try {
-    const response = await fetch(finalUrl, options);
+    // Only intercept for mock mode if explicitly enabled via environment variable
+    if (MOCK_MODE) {
+      console.log(`[apiFetch] MOCK MODE ACTIVE: Intercepting ${url}`);
+      const mockData = getMockData(url, options) as any;
+      
+      // Simulate delay
+      await new Promise(resolve => setTimeout(resolve, 800));
+      
+      if (mockData && typeof mockData === 'object' && 'success' in mockData) {
+         return mockData.data !== undefined ? mockData.data : mockData;
+      }
+      return mockData;
+    }
+
+    let finalUrl = url;
     
+    // Clean REST mappings
+    if (url === '/api/cvs') finalUrl = '/api/cvs/index';
+    else if (url === '/api/cover-letters') finalUrl = '/api/cover-letters/index';
+    else if (url === '/api/matches') finalUrl = '/api/actions?action=list_matches';
+    else if (url === '/api/matches/saved') finalUrl = '/api/matches/saved';
+    else if (url === '/api/settings/language') finalUrl = '/api/settings/language';
+    else if (url === '/api/settings') finalUrl = '/api/actions?action=get_settings';
+    else if (url === '/api/jobs') finalUrl = '/api/jobs/index';
+    else if (url === '/api/history') finalUrl = '/api/actions?action=list_history';
+    else if (url.startsWith('/api/history/')) {
+      const parts = url.split('/');
+      const type = parts[3];
+      const id = parts[4];
+      finalUrl = `/api/actions?action=delete_history_item&type=${type}&id=${id}`;
+    }
+    else if (url === '/api/matches/analyze') finalUrl = '/api/actions?action=analyze_match';
+    else if (url === '/api/matches/custom') finalUrl = '/api/actions?action=custom_match';
+    else if (url.startsWith('/api/matches/save/')) {
+      const id = url.split('/').pop();
+      finalUrl = `/api/actions?action=toggle_save_match&id=${id}`;
+    }
+    else if (url === '/api/cvs/rewrite') finalUrl = '/api/actions?action=rewrite_cv';
+    else if (url.startsWith('/api/cvs/') && url.endsWith('/versions')) {
+      const cvId = url.split('/')[3];
+      finalUrl = `/api/actions?action=cv_versions&cvId=${cvId}`;
+    }
+    else if (url.startsWith('/api/cvs/') && url.includes('/versions/') && url.endsWith('/restore')) {
+      const parts = url.split('/');
+      const cvId = parts[3];
+      const versionId = parts[5];
+      finalUrl = `/api/actions?action=restore_cv_version&cvId=${cvId}&versionId=${versionId}`;
+    }
+    else if (url === '/api/admin/stats') finalUrl = '/api/admin?action=stats';
+    else if (url === '/api/admin/users') finalUrl = '/api/admin?action=users';
+    else if (url === '/api/admin/jobs') finalUrl = '/api/admin?action=jobs';
+    else if (url === '/api/admin/settings') finalUrl = '/api/admin?action=settings';
+    else if (url === '/api/admin/seed-demo') finalUrl = '/api/admin?action=seed';
+    else if (url.startsWith('/api/admin/users/')) {
+      const userId = url.split('/')[4];
+      if (url.endsWith('/reset-password')) {
+        finalUrl = `/api/admin?action=reset-password&id=${userId}`;
+      } else {
+        finalUrl = `/api/admin?action=users&id=${userId}`;
+      }
+    }
+    else if (url.startsWith('/api/admin/jobs/')) {
+      const jobId = url.split('/')[4];
+      finalUrl = `/api/admin?action=jobs&id=${jobId}`;
+    }
+    else if (url.startsWith('/api/career-advice/')) {
+      const cvId = url.split('/').pop();
+      finalUrl = `/api/actions?action=get_career_advice&cvId=${cvId}`;
+    }
+
+    console.log(`[apiFetch] Request: ${options.method || 'GET'} ${url} -> ${finalUrl}`, { body: !!options.body });
+    console.log("[apiFetch] BEFORE fetch()", options);
+
+    let response;
+    try {
+      response = await fetch(finalUrl, options);
+    } catch (fetchErr: any) {
+      console.error("[apiFetch] FETCH ERROR", fetchErr);
+      throw fetchErr;
+    }
+
+    console.log("[apiFetch] AFTER fetch()", response.status);
+
     // Read as text first to handle empty/non-JSON safely
     const responseText = await response.text();
-    
-    console.log(`[apiFetch] Response (${response.status}) from ${finalUrl}: ${responseText.substring(0, 100)}...`);
+    console.log("[apiFetch] RAW RESPONSE", responseText);
 
     if (!responseText && !response.ok) {
       throw new Error(`Server returned empty response (Status: ${response.status})`);
@@ -146,7 +155,7 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
 
     return data;
   } catch (error: any) {
-    console.error(`[apiFetch] Error for ${finalUrl}:`, error);
+    console.error("[apiFetch] PRE-FETCH ERROR", error);
     throw error;
   }
 }

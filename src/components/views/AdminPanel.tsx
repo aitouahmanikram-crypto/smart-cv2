@@ -150,15 +150,33 @@ export default function AdminPanel({ token }: AdminPanelProps) {
 
   // Delete user
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm("Are you absolutely sure you want to delete this user? This action is irreversible.")) return;
+    console.log("Delete clicked:", userId);
+    
+    let shouldDelete = true;
     try {
-      await apiFetch(`/api/admin/users/${userId}`, {
+      shouldDelete = confirm("Are you sure you want to delete this item?");
+    } catch (e) {
+      shouldDelete = true;
+    }
+    if (!shouldDelete) return;
+
+    const previousUsers = [...users];
+    const endpoint = `/api/admin/users/${userId}`;
+    console.log("DELETE request:", endpoint);
+    try {
+      // Remove item from UI state immediately
+      setUsers(prev => prev.filter(u => u.id !== userId));
+
+      const response = await apiFetch(endpoint, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
       });
-      setUsers(prev => prev.filter(u => u.id !== userId));
+      console.log("DELETE response:", response);
     } catch (err: any) {
-      alert(err.message);
+      console.error("Error deleting user:", err);
+      alert(err.message || "Failed to delete user. Please try again.");
+      // Rollback state on error
+      setUsers(previousUsers);
     }
   };
 
@@ -290,15 +308,33 @@ export default function AdminPanel({ token }: AdminPanelProps) {
 
   // Delete Job Offer
   const handleDeleteJob = async (jobId: string) => {
-    if (!confirm("Are you sure you want to delete this job offer?")) return;
+    console.log("Delete clicked:", jobId);
+    
+    let shouldDelete = true;
     try {
-      await apiFetch(`/api/admin/jobs/${jobId}`, {
+      shouldDelete = confirm("Are you sure you want to delete this item?");
+    } catch (e) {
+      shouldDelete = true;
+    }
+    if (!shouldDelete) return;
+
+    const previousJobs = [...jobs];
+    const endpoint = `/api/admin/jobs/${jobId}`;
+    console.log("DELETE request:", endpoint);
+    try {
+      // Remove item from UI state immediately
+      setJobs(prev => prev.filter(j => j.id !== jobId));
+
+      const response = await apiFetch(endpoint, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
       });
-      setJobs(prev => prev.filter(j => j.id !== jobId));
+      console.log("DELETE response:", response);
     } catch (err: any) {
-      alert(err.message);
+      console.error("Error deleting job offer:", err);
+      alert(err.message || "Failed to delete job offer. Please try again.");
+      // Rollback state on error
+      setJobs(previousJobs);
     }
   };
 
@@ -457,23 +493,29 @@ export default function AdminPanel({ token }: AdminPanelProps) {
                 <h3 className="text-sm font-bold text-slate-200 font-mono tracking-wider">REGISTRATION ACQUISITION SLOPE</h3>
                 <p className="text-[10px] text-slate-400">Total new registered users monthly</p>
               </div>
-              <div className="h-48 w-full pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={stats.charts.newUsers}>
-                    <defs>
-                      <linearGradient id="userAcq" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.2}/>
-                        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} />
-                    <XAxis dataKey="month" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
-                    <Area type="monotone" dataKey="count" name="New registrations" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#userAcq)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+              {stats?.charts?.newUsers && stats.charts.newUsers.length > 0 ? (
+                <div className="w-full h-[300px] min-h-[300px] pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={stats.charts.newUsers}>
+                      <defs>
+                        <linearGradient id="userAcq" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#6366f1" stopOpacity={0.2}/>
+                          <stop offset="100%" stopColor="#6366f1" stopOpacity={0.0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} />
+                      <XAxis dataKey="month" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
+                      <Area type="monotone" dataKey="count" name="New registrations" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#userAcq)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center text-slate-500 italic text-xs">
+                  No registration tracking data available yet.
+                </div>
+              )}
             </div>
 
             {/* Chart 2: ATS Score Volume Distribution */}
@@ -482,21 +524,27 @@ export default function AdminPanel({ token }: AdminPanelProps) {
                 <h3 className="text-sm font-bold text-slate-200 font-mono tracking-wider">RESUME ATS COMPLIANCE DISTRIBUTION</h3>
                 <p className="text-[10px] text-slate-400">Volume index of analyzed CV scores</p>
               </div>
-              <div className="h-48 w-full pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.charts.atsDistribution}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.2} />
-                    <XAxis dataKey="range" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
-                    <Bar dataKey="count" name="Analyses Count" fill="#ec4899" radius={[4, 4, 0, 0]} maxBarSize={30}>
-                      {stats.charts.atsDistribution.map((entry: any, index: number) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {stats?.charts?.atsDistribution && stats.charts.atsDistribution.length > 0 ? (
+                <div className="w-full h-[300px] min-h-[300px] pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={stats.charts.atsDistribution}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.2} />
+                      <XAxis dataKey="range" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
+                      <Bar dataKey="count" name="Analyses Count" fill="#ec4899" radius={[4, 4, 0, 0]} maxBarSize={30}>
+                        {stats.charts.atsDistribution.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center text-slate-500 italic text-xs">
+                  No compliance score statistics found.
+                </div>
+              )}
             </div>
 
             {/* Chart 3: Feature Interaction Frequencies */}
@@ -505,17 +553,23 @@ export default function AdminPanel({ token }: AdminPanelProps) {
                 <h3 className="text-sm font-bold text-slate-200 font-mono tracking-wider">AI FUNCTIONAL UTILITY STATS</h3>
                 <p className="text-[10px] text-slate-400">Action frequency per critical core feature</p>
               </div>
-              <div className="h-48 w-full pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.charts.mostUsedFeatures}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.2} />
-                    <XAxis dataKey="feature" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
-                    <Bar dataKey="count" name="Triggers" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={30} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {stats?.charts?.mostUsedFeatures && stats.charts.mostUsedFeatures.length > 0 ? (
+                <div className="w-full h-[300px] min-h-[300px] pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={stats.charts.mostUsedFeatures}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.2} />
+                      <XAxis dataKey="feature" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <Tooltip contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', fontSize: 10, borderRadius: '8px' }} />
+                      <Bar dataKey="count" name="Triggers" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={30} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center text-slate-500 italic text-xs">
+                  No feature usage statistics found.
+                </div>
+              )}
             </div>
 
             {/* Application Health Diagnostics */}
@@ -886,7 +940,7 @@ export default function AdminPanel({ token }: AdminPanelProps) {
                 <p className="text-[10px] text-slate-400">Response parameters and prompt performance audits</p>
               </div>
               
-              <div className="h-64 pt-2">
+              <div className="w-full h-[300px] min-h-[300px] pt-2">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie

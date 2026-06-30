@@ -48,16 +48,36 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
   }, [token]);
 
   const handleRemoveSavedJob = async (matchId: string) => {
+    console.log("Delete clicked:", matchId);
+    
+    let shouldDelete = true;
     try {
-      await apiFetch(`/api/matches/save/${matchId}`, {
+      shouldDelete = confirm("Are you sure you want to delete this item?");
+    } catch (e) {
+      shouldDelete = true;
+    }
+    if (!shouldDelete) return;
+
+    const previousSavedJobs = [...savedJobs];
+    const endpoint = `/api/matches/save/${matchId}`;
+    console.log("DELETE request:", endpoint);
+
+    try {
+      // Remove item from UI state immediately
+      setSavedJobs(prev => prev.filter(job => job.id !== matchId));
+
+      const response = await apiFetch(endpoint, {
          method: "DELETE",
          headers: {
            "Authorization": `Bearer ${token}`
          }
       });
-      setSavedJobs(prev => prev.filter(job => job.id !== matchId));
+      console.log("DELETE response:", response);
     } catch (err: any) {
-       console.error("Error removing saved job:", err);
+        console.error("Error removing saved job:", err);
+        alert(err.message || "Failed to remove saved job. Please try again.");
+        // Rollback state on error
+        setSavedJobs(previousSavedJobs);
     }
   };
 
@@ -415,35 +435,47 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
               </span>
             </div>
             
-            <div className="h-56 w-full pt-2">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={getAtsEvolutionData()}>
-                  <defs>
-                    <linearGradient id="atsLineGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#6366f1" />
-                      <stop offset="50%" stopColor="#a855f7" />
-                      <stop offset="100%" stopColor="#fae" />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.4} />
-                  <XAxis dataKey="name" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} domain={[40, 100]} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '12px', fontSize: 10 }}
-                    formatter={(value: any, name: any, props: any) => [`${value}% ATS Score`, props.payload.file]}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="score" 
-                    name="ATS compliance score"
-                    stroke="url(#atsLineGrad)" 
-                    strokeWidth={3} 
-                    activeDot={{ r: 7, strokeWidth: 0, fill: '#ec4899' }} 
-                    dot={{ fill: '#6366f1', strokeWidth: 1.5, r: 4 }} 
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            {(() => {
+              const chartData = getAtsEvolutionData() || [];
+              if (chartData.length === 0) {
+                return (
+                  <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center border border-dashed border-slate-800 rounded-xl text-slate-500 italic text-xs">
+                    No resume compliance data available yet. Upload a CV to visualize progress.
+                  </div>
+                );
+              }
+              return (
+                <div className="w-full h-[300px] min-h-[300px] pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData}>
+                      <defs>
+                        <linearGradient id="atsLineGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#6366f1" />
+                          <stop offset="50%" stopColor="#a855f7" />
+                          <stop offset="100%" stopColor="#fae" />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.4} />
+                      <XAxis dataKey="name" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} domain={[40, 100]} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '12px', fontSize: 10 }}
+                        formatter={(value: any, name: any, props: any) => [`${value}% ATS Score`, props.payload.file]}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="score" 
+                        name="ATS compliance score"
+                        stroke="url(#atsLineGrad)" 
+                        strokeWidth={3} 
+                        activeDot={{ r: 7, strokeWidth: 0, fill: '#ec4899' }} 
+                        dot={{ fill: '#6366f1', strokeWidth: 1.5, r: 4 }} 
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Chart 2: Analyses & Activity per Month */}
@@ -471,21 +503,33 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
               </div>
             </div>
 
-            <div className="h-56 w-full pt-2">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={getMonthlyActivityData()} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} />
-                  <XAxis dataKey="monthName" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '12px', fontSize: 10 }}
-                  />
-                  <Bar dataKey="cvs" name="Resumes" fill="#6366f1" radius={[3, 3, 0, 0]} barSize={9} />
-                  <Bar dataKey="letters" name="Cover Letters" fill="#10b981" radius={[3, 3, 0, 0]} barSize={9} />
-                  <Bar dataKey="matches" name="Analyzed Fits" fill="#f59e0b" radius={[3, 3, 0, 0]} barSize={9} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {(() => {
+              const chartData = getMonthlyActivityData() || [];
+              if (chartData.length === 0) {
+                return (
+                  <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center border border-dashed border-slate-800 rounded-xl text-slate-500 italic text-xs">
+                    No monthly asset statistics available yet.
+                  </div>
+                );
+              }
+              return (
+                <div className="w-full h-[300px] min-h-[300px] pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" opacity={0.3} />
+                      <XAxis dataKey="monthName" stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#64748b" fontSize={9} tickLine={false} axisLine={false} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '12px', fontSize: 10 }}
+                      />
+                      <Bar dataKey="cvs" name="Resumes" fill="#6366f1" radius={[3, 3, 0, 0]} barSize={9} />
+                      <Bar dataKey="letters" name="Cover Letters" fill="#10b981" radius={[3, 3, 0, 0]} barSize={9} />
+                      <Bar dataKey="matches" name="Analyzed Fits" fill="#f59e0b" radius={[3, 3, 0, 0]} barSize={9} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
           </div>
 
         </div>
@@ -571,24 +615,36 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
               <p className="text-[11px] text-slate-500 mt-0.5">Chronological system action spikes over the last fortnight.</p>
             </div>
 
-            <div className="h-32 w-full pt-1">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={getActivityTimelineData()} margin={{ top: 5, right: 5, left: -32, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="glowColor" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#ec4899" stopOpacity={0.25}/>
-                      <stop offset="100%" stopColor="#ec4899" stopOpacity={0.0}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="dateStr" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '8px', fontSize: 9 }}
-                  />
-                  <Area type="monotone" dataKey="count" stroke="#ec4899" strokeWidth={2} fillOpacity={1} fill="url(#glowColor)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {(() => {
+              const chartData = getActivityTimelineData() || [];
+              if (chartData.length === 0) {
+                return (
+                  <div className="w-full h-[300px] min-h-[300px] flex items-center justify-center border border-dashed border-slate-800 rounded-xl text-slate-500 italic text-xs">
+                    No timeline tracking data found.
+                  </div>
+                );
+              }
+              return (
+                <div className="w-full h-[300px] min-h-[300px] pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -32, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="glowColor" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#ec4899" stopOpacity={0.25}/>
+                          <stop offset="100%" stopColor="#ec4899" stopOpacity={0.0}/>
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="dateStr" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#090e1a', borderColor: '#1e293b', color: '#fff', borderRadius: '8px', fontSize: 9 }}
+                      />
+                      <Area type="monotone" dataKey="count" stroke="#ec4899" strokeWidth={2} fillOpacity={1} fill="url(#glowColor)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
           </div>
 
         </div>

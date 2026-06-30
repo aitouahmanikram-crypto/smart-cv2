@@ -96,6 +96,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ success: true, data: matches || [] });
     }
     if (action === 'toggle_save_match') {
+      console.log("[DELETE] type: toggle_save_match, method:", req.method, "id:", id);
       if (req.method === 'POST') {
         await supabase.from('activities').insert([{ id: `save-${Date.now()}`, userId: user.id, tenantId: user.tenantId, type: 'saved_job', message: id, timestamp: new Date().toISOString() }]);
         return res.status(200).json({ success: true });
@@ -326,7 +327,157 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       });
     }
+    if (action === 'delete_item') {
+      console.log("[DELETE API] reached");
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+      const targetId = body.id || req.query.id;
+      let targetType = body.type || req.query.type;
+
+      // Rule: If id ends with "-hr", detect it as interview or history item, not analysis.
+      if (typeof targetId === 'string') {
+        if (targetId.endsWith('-hr') || targetId.endsWith('-tech') || targetId.endsWith('-behavioral') || targetId.endsWith('-situational')) {
+          targetType = 'interview';
+        }
+      }
+
+      console.log("[DELETE] delete_item requested - type:", targetType, "id:", targetId);
+
+      if (!targetId || !targetType) {
+        return res.status(400).json({ success: false, error: "Missing required id or type for deletion" });
+      }
+
+      if (targetType === 'interview') {
+        const parts = String(targetId).split('-');
+        const cvId = parts.slice(0, -1).join('-');
+        const categorySuffix = parts[parts.length - 1];
+
+        // 1. Update CV's parsedDetails if present
+        try {
+          const { data: cv } = await supabase.from('cvs').select('*').eq('id', cvId).eq('userId', user.id).maybeSingle();
+          if (cv) {
+            const details = typeof cv.parsedDetails === 'string' ? JSON.parse(cv.parsedDetails) : cv.parsedDetails || {};
+            if (categorySuffix === 'hr') delete details.hrQuestions;
+            else if (categorySuffix === 'tech') delete details.technicalQuestions;
+            else if (categorySuffix === 'behavioral') delete details.behavioralQuestions;
+            else if (categorySuffix === 'situational') delete details.situationalQuestions;
+
+            await supabase.from('cvs').update({ parsedDetails: details }).eq('id', cvId).eq('userId', user.id);
+          }
+        } catch (err) {
+          console.error('[delete_item] error updating cv details:', err);
+        }
+
+        // 2. Delete from interview_questions
+        try {
+          await supabase.from('interview_questions').delete().eq('cvId', cvId).eq('userId', user.id);
+        } catch (err) {
+          console.error('[delete_item] error deleting from interview_questions:', err);
+        }
+
+        // 3. Delete from activities
+        try {
+          const { data: acts } = await supabase.from('activities').select('id, message').eq('userId', user.id).eq('type', 'interview_questions');
+          if (acts && acts.length > 0) {
+            for (const act of acts) {
+              if (act.message && String(act.message).includes(cvId)) {
+                await supabase.from('activities').delete().eq('id', act.id);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[delete_item] error deleting from activities:', err);
+        }
+
+        return res.status(200).json({
+          success: true,
+          deletedId: targetId,
+          deletedType: targetType
+        });
+      }
+
+      if (targetType === 'job') {
+        console.log("[DELETE] type: admin_job, id:", targetId);
+        const { error } = await supabase.from('jobs').delete().eq('id', targetId);
+        if (error) throw error;
+        return res.status(200).json({
+          success: true,
+          deletedId: targetId,
+          deletedType: targetType
+        });
+      }
+
+      if (targetType === 'user') {
+        console.log("[DELETE] type: admin_user, id:", targetId);
+        const userDependents = [
+          'cv_versions',
+          'career_advice',
+          'interview_questions',
+          'matches',
+          'job_matches',
+          'cover_letters',
+          'cvs',
+          'activities'
+        ];
+        for (const depTable of userDependents) {
+          try {
+            await supabase.from(depTable).delete().eq('userId', targetId);
+          } catch (err) {
+            console.error(`[delete_item] Soft fail on user dep ${depTable}:`, err);
+          }
+        }
+        const { error } = await supabase.from('users').delete().eq('id', targetId);
+        if (error) throw error;
+        return res.status(200).json({
+          success: true,
+          deletedId: targetId,
+          deletedType: targetType
+        });
+      }
+
+      const tableMap: any = { 
+        analysis: 'cvs', 
+        analyses: 'cvs', 
+        cvs: 'cvs', 
+        coverLetter: 'cover_letters', 
+        letters: 'cover_letters', 
+        coverLetters: 'cover_letters', 
+        match: 'matches', 
+        matches: 'matches' 
+      };
+      const table = tableMap[String(targetType)];
+      if (!table) return res.status(400).json({ success: false, error: "Invalid type for deletion: " + targetType });
+
+      if (table === 'cvs') {
+        // Cascade delete dependents to avoid foreign key violation constraint
+        const dependents = [
+          'cv_versions',
+          'career_advice',
+          'interview_questions',
+          'matches',
+          'job_matches',
+          'cover_letters'
+        ];
+        for (const depTable of dependents) {
+          try {
+            await supabase.from(depTable).delete().eq('cvId', targetId);
+          } catch (err) {
+            console.log(`[delete_item] Soft fail on deleting from ${depTable}:`, err);
+          }
+        }
+      }
+
+      const { error } = await supabase.from(table).delete().eq('id', targetId).eq('userId', user.id);
+      if (error) throw error;
+
+      return res.status(200).json({
+        success: true,
+        deletedId: targetId,
+        deletedType: targetType
+      });
+    }
+
     if (action === 'delete_history_item') {
+      console.log("[DELETE] type:", type, "id:", id);
       if (type === 'interview') {
         const parts = String(id).split('-');
         const cvId = parts.slice(0, -1).join('-');

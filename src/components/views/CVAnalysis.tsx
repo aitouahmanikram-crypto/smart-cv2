@@ -305,20 +305,28 @@ export default function CVAnalysis({ token }: { token: string }) {
             </div>
             
             <div className="layout-common space-y-6">
-              <div className="h-48 w-full mt-4">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={getChartData(selectedCv)} layout="vertical" margin={{ top: 0, right: 30, left: 10, bottom: 0 }}>
-                    <XAxis type="number" domain={[0, 100]} hide />
-                    <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} width={60} />
-                    <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#fff', borderRadius: '8px' }} />
-                    <Bar dataKey="score" radius={[0, 4, 4, 0]} barSize={20}>
-                      {getChartData(selectedCv).map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {(() => {
+                const chartData = getChartData(selectedCv) || [];
+                if (chartData.length === 0) {
+                  return <div className="text-slate-500 italic p-4 text-center">No scores available for this CV.</div>;
+                }
+                return (
+                  <div className="w-full h-[300px] min-h-[300px] mt-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData} layout="vertical" margin={{ top: 0, right: 30, left: 10, bottom: 0 }}>
+                        <XAxis type="number" domain={[0, 100]} hide />
+                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} width={60} />
+                        <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#fff', borderRadius: '8px' }} />
+                        <Bar dataKey="score" radius={[0, 4, 4, 0]} barSize={20}>
+                          {chartData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                );
+              })()}
 
               <div className="lg:col-span-2 space-y-6">
                 <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 backdrop-blur-sm">
