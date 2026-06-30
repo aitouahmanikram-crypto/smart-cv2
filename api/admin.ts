@@ -114,6 +114,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ success: true });
       }
       if (req.method === 'DELETE' && id) {
+        // Delete all dependent records for this user first
+        const userDependents = [
+          'cv_versions',
+          'career_advice',
+          'interview_questions',
+          'matches',
+          'job_matches',
+          'cover_letters',
+          'cvs',
+          'activities'
+        ];
+        for (const depTable of userDependents) {
+          try {
+            await supabase.from(depTable).delete().eq('userId', id);
+          } catch (err) {
+            console.log(`[Admin Delete User] Soft fail on deleting from ${depTable}:`, err);
+          }
+        }
         const { error } = await supabase.from('users').delete().eq('id', id);
         if (error) throw error;
         return res.status(200).json({ success: true });

@@ -136,6 +136,20 @@ async function startServer() {
     next();
   }, vercelToExpress(actionsHandler, 'actions-get-career-advice'));
 
+  app.all('/api/admin/users/:id', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'users';
+    req.query.id = req.params.id;
+    next();
+  }, vercelToExpress(adminHandler, 'admin-user-detail'));
+
+  app.all('/api/admin/jobs/:id', async (req: any, res: any, next: any) => {
+    req.query = req.query || {};
+    req.query.action = 'jobs';
+    req.query.id = req.params.id;
+    next();
+  }, vercelToExpress(adminHandler, 'admin-job-detail'));
+
   app.all('/api/admin', vercelToExpress(adminHandler, 'admin'));
   app.all('/api/actions', vercelToExpress(actionsHandler, 'actions'));
   

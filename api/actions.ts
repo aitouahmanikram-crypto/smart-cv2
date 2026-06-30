@@ -327,6 +327,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
     if (action === 'delete_history_item') {
+      if (type === 'interview') {
+        const parts = String(id).split('-');
+        const cvId = parts.slice(0, -1).join('-');
+        const categorySuffix = parts[parts.length - 1];
+
+        // 1. Update CV's parsedDetails if present
+        try {
+          const { data: cv } = await supabase.from('cvs').select('*').eq('id', cvId).eq('userId', user.id).maybeSingle();
+          if (cv) {
+            const details = typeof cv.parsedDetails === 'string' ? JSON.parse(cv.parsedDetails) : cv.parsedDetails || {};
+            if (categorySuffix === 'hr') delete details.hrQuestions;
+            else if (categorySuffix === 'tech') delete details.technicalQuestions;
+            else if (categorySuffix === 'behavioral') delete details.behavioralQuestions;
+            else if (categorySuffix === 'situational') delete details.situationalQuestions;
+
+            await supabase.from('cvs').update({ parsedDetails: details }).eq('id', cvId).eq('userId', user.id);
+          }
+        } catch (err) {
+          console.error('[delete_history_item] error updating cv details:', err);
+        }
+
+        // 2. Delete from interview_questions
+        try {
+          await supabase.from('interview_questions').delete().eq('cvId', cvId).eq('userId', user.id);
+        } catch (err) {
+          console.error('[delete_history_item] error deleting from interview_questions:', err);
+        }
+
+        // 3. Delete from activities with type="interview_questions"
+        try {
+          const { data: acts } = await supabase.from('activities').select('id, message').eq('userId', user.id).eq('type', 'interview_questions');
+          if (acts && acts.length > 0) {
+            for (const act of acts) {
+              if (act.message && String(act.message).includes(cvId)) {
+                await supabase.from('activities').delete().eq('id', act.id);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[delete_history_item] error deleting from activities for interview_questions:', err);
+        }
+
+        return res.status(200).json({ success: true });
+      }
+
       const tableMap: any = { 
         analysis: 'cvs', 
         analyses: 'cvs', 
@@ -339,6 +384,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
       const table = tableMap[String(type)];
       if (!table) return res.status(400).json({ success: false, error: "Invalid type for deletion" });
+
+      if (table === 'cvs') {
+        // Cascade delete dependents to avoid foreign key violation constraint
+        const dependents = [
+          'cv_versions',
+          'career_advice',
+          'interview_questions',
+          'matches',
+          'job_matches',
+          'cover_letters'
+        ];
+        for (const depTable of dependents) {
+          try {
+            await supabase.from(depTable).delete().eq('cvId', id);
+          } catch (err) {
+            console.log(`[delete_history_item] Soft fail on deleting from ${depTable}:`, err);
+          }
+        }
+      }
+
       await supabase.from(table).delete().eq('id', id).eq('userId', user.id);
       return res.status(200).json({ success: true });
     }
@@ -346,12 +411,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // CV actions
     if (action === 'rewrite_cv') {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-      const { cvId: bodyCvId, prompt, targetJob } = body;
+      const { cvId: bodyCvId, prompt, targetJob, type, text } = body;
+
+      if (text !== undefined) {
+        // Snippet rewrite mode from Rewrite.tsx!
+        const improvedText = await rewriteCVContent({ 
+          originalContent: text, 
+          prompt: prompt || `Optimize this ${type || 'section'} section for a professional resume/CV, making it highly impactful and ATS-friendly.` 
+        });
+        return res.status(200).json({ success: true, result: improvedText });
+      }
+
       const { data: existing } = await supabase.from('cvs').select('*').eq('id', bodyCvId).maybeSingle();
       if (!existing) return res.status(404).json({ success: false, error: "CV not found" });
       const rewrittenText = await rewriteCVContent({ originalContent: existing.summary, prompt, targetJob });
       const { data } = await supabase.from('cvs').update({ summary: rewrittenText, updatedAt: new Date().toISOString() }).eq('id', bodyCvId).select();
-      return res.status(200).json({ success: true, data: data ? data[0] : null });
+      return res.status(200).json({ success: true, data: data ? data[0] : null, result: rewrittenText });
     }
     if (action === 'cv_versions') {
       try {

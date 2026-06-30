@@ -93,8 +93,8 @@ export default function AdminPanel({ token }: AdminPanelProps) {
       ]);
 
       setStats(statsData);
-      setUsers(usersData);
-      setJobs(jobsData);
+      setUsers(Array.isArray(usersData) ? usersData : []);
+      setJobs(Array.isArray(jobsData) ? jobsData : []);
       setSysSettings(settingsData);
     } catch (err: any) {
       setError(err.message);

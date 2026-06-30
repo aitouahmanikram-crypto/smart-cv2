@@ -36,31 +36,32 @@ export default function JobMatching({ token }: { token: string }) {
           apiFetch("/api/matches/saved", { headers: { "Authorization": `Bearer ${token}` } })
         ]);
         
-        const mergedJobs = [...jobsData];
-        if (Array.isArray(matchesData)) {
-          matchesData.forEach((m: any) => {
-            if (m.customJob && m.customJob.id) {
-              if (!mergedJobs.some((j: any) => j.id === m.customJob.id)) {
-                mergedJobs.unshift(m.customJob);
-              }
+        const safeJobs = Array.isArray(jobsData) ? jobsData : [];
+        const safeCvs = Array.isArray(cvData) ? cvData : [];
+        const safeMatches = Array.isArray(matchesData) ? matchesData : [];
+        const safeSaved = Array.isArray(savedData) ? savedData : [];
+
+        const mergedJobs = [...safeJobs];
+        safeMatches.forEach((m: any) => {
+          if (m.customJob && m.customJob.id) {
+            if (!mergedJobs.some((j: any) => j.id === m.customJob.id)) {
+              mergedJobs.unshift(m.customJob);
             }
-          });
-        }
+          }
+        });
         
         setJobs(mergedJobs);
-        setCvs(cvData);
-        setMatches(matchesData);
+        setCvs(safeCvs);
+        setMatches(safeMatches);
         
         const savedMap: Record<string, boolean> = {};
-        if (Array.isArray(savedData)) {
-          savedData.forEach((m: any) => {
-            savedMap[m.id] = true;
-          });
-        }
+        safeSaved.forEach((m: any) => {
+          savedMap[m.id] = true;
+        });
         setSavedMatchIds(savedMap);
         
-        if (cvData.length > 0) {
-          setSelectedCv(cvData[0].id);
+        if (safeCvs.length > 0) {
+          setSelectedCv(safeCvs[0].id);
         }
       } catch (err: any) {
         setError(err.message);

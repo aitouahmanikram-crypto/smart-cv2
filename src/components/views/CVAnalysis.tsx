@@ -167,9 +167,10 @@ export default function CVAnalysis({ token }: { token: string }) {
             "Authorization": `Bearer ${token}`
           }
         });
-        setCvs(data);
-        if (data.length > 0) {
-          setSelectedCv(data[0]);
+        const safeData = Array.isArray(data) ? data : [];
+        setCvs(safeData);
+        if (safeData.length > 0) {
+          setSelectedCv(safeData[0]);
         }
       } catch (err: any) {
         setError(err.message);

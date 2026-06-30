@@ -36,8 +36,8 @@ export default function Overview({ token, onNavigate }: OverviewProps) {
           apiFetch("/api/matches/saved", { headers: { "Authorization": `Bearer ${token}` } })
         ]);
 
-        setStats(statsData);
-        setSavedJobs(savedData || []);
+        setStats(statsData || {});
+        setSavedJobs(Array.isArray(savedData) ? savedData : []);
       } catch (err: any) {
         setError(err.message);
       } finally {
