@@ -408,23 +408,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (targetType === 'user') {
         console.log("[DELETE] type: admin_user, id:", targetId);
-        const userDependents = [
-          'cv_versions',
-          'career_advice',
-          'interview_questions',
-          'matches',
-          'job_matches',
-          'cover_letters',
+        try {
+          // 1. Get all CVs for this user
+          const { data: userCvs } = await supabase.from('cvs').select('id').eq('userId', targetId);
+          const cvIds = userCvs ? userCvs.map(c => c.id) : [];
+
+          if (cvIds.length > 0) {
+            const cvDependents = [
+              'cv_versions',
+              'career_advice',
+              'interview_questions',
+              'matches',
+              'job_matches',
+              'cover_letters'
+            ];
+            for (const depTable of cvDependents) {
+              try {
+                await supabase.from(depTable).delete().in('cvId', cvIds);
+              } catch (err) {
+                console.error(`[delete_item] Soft fail on user dep ${depTable} with cvIds:`, err);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[delete_item] Error finding user CVs or deleting CV dependents:', err);
+        }
+
+        // 2. Direct user dependents
+        const directDependents = [
           'cvs',
           'activities'
         ];
-        for (const depTable of userDependents) {
+        for (const depTable of directDependents) {
           try {
             await supabase.from(depTable).delete().eq('userId', targetId);
           } catch (err) {
-            console.error(`[delete_item] Soft fail on user dep ${depTable}:`, err);
+            console.error(`[delete_item] Soft fail on direct user dep ${depTable}:`, err);
           }
         }
+
         const { error } = await supabase.from('users').delete().eq('id', targetId);
         if (error) throw error;
         return res.status(200).json({
@@ -466,8 +488,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      const { error } = await supabase.from(table).delete().eq('id', targetId).eq('userId', user.id);
-      if (error) throw error;
+      if (table === 'matches') {
+        // Fetch the match first to check cvId
+        const { data: matchObj } = await supabase.from('matches').select('cvId').eq('id', targetId).maybeSingle();
+        if (matchObj) {
+          // Check if this CV belongs to the user
+          const { data: cvObj } = await supabase.from('cvs').select('id').eq('id', matchObj.cvId).eq('userId', user.id).maybeSingle();
+          if (!cvObj) {
+            return res.status(403).json({ success: false, error: "Unauthorized to delete this match" });
+          }
+        }
+        const { error } = await supabase.from('matches').delete().eq('id', targetId);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from(table).delete().eq('id', targetId).eq('userId', user.id);
+        if (error) throw error;
+      }
 
       return res.status(200).json({
         success: true,
@@ -555,7 +591,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      await supabase.from(table).delete().eq('id', id).eq('userId', user.id);
+      if (table === 'matches') {
+        const { data: matchObj } = await supabase.from('matches').select('cvId').eq('id', id).maybeSingle();
+        if (matchObj) {
+          const { data: cvObj } = await supabase.from('cvs').select('id').eq('id', matchObj.cvId).eq('userId', user.id).maybeSingle();
+          if (!cvObj) {
+            return res.status(403).json({ success: false, error: "Unauthorized to delete this match" });
+          }
+        }
+        await supabase.from('matches').delete().eq('id', id);
+      } else {
+        await supabase.from(table).delete().eq('id', id).eq('userId', user.id);
+      }
       return res.status(200).json({ success: true });
     }
 
